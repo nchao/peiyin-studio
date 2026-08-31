@@ -1,0 +1,7 @@
+# 部署用覆盖文件：直接用 Mac 预构建好的镜像，NAS 不再本地构建。
+# 配合 deploy.sh 使用（Mac 上 build → save → 传 NAS → load → 用本文件起）：
+#   docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d
+# 注意：不要带 --build。镜像已存在时 compose 直接用它，不会触发构建。
+services:
+  peiyin:
+    image: peiyin:latest

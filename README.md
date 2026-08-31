@@ -33,6 +33,30 @@ docker compose up -d
 
 停止用 `docker compose stop`，再次启动 `docker compose start`。
 
+## 部署到群晖 NAS
+
+NAS 的低功耗 CPU（如 Celeron J4125）本地构建很慢，尤其前端 `npm build` 和 `pip` 编译扩展要几分钟。方案是**在开发机上构建好镜像，再传到 NAS 直接运行**，NAS 不做任何编译。开发机与 NAS 同为 amd64 架构，镜像可直接通用。
+
+```bash
+# 开发机上一键部署（构建 → save → 传 NAS → load → 起容器 → 健康检查）
+./deploy.sh
+
+# 只改了代码、镜像已构建过时，跳过构建直接传+起
+./deploy.sh --no-build
+```
+
+`deploy.sh` 顶部有配置项（NAS 地址/端口/目录、代理），按自己环境改。前提：已配好到 NAS 的 SSH 免密与 `sudo docker` 免密。Docker 分层缓存让改代码后只重传变化的层。
+
+NAS 上手动启停用部署专用 compose（`docker-compose.deploy.yml` 用现成镜像，不触发构建）：
+
+```bash
+cd /volume1/docker/peiyin
+sudo docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d     # 起
+sudo docker compose -f docker-compose.yml -f docker-compose.deploy.yml stop      # 停
+```
+
+对外访问建议：域名走 HTTPS（反向代理套证书），并在 NAS 的 `.env` 设 `APP_PASSWORD` 开启访问密码。
+
 ## 配置
 
 `.env` 里的关键项：
@@ -46,6 +70,7 @@ docker compose up -d
 | `LLM_CHUNK_CHARS` | 每块送 LLM 的字符数（默认 400）。LLM 输出有 token 上限，长稿必须切块并行 |
 | `TTS_CONCURRENCY` | 并发合成段数（默认 4）。MiMo 限流 RPM 100 且按账号聚合，别调太高 |
 | `PORT` | 对外端口（默认 8756），改这里需同步改 `docker-compose.yml` 的映射 |
+| `APP_PASSWORD` | 访问密码。留空=不鉴权（本地/局域网直接用）；设值=打开页面需登录。用于对外域名场景，务必同时让域名走 HTTPS |
 
 完整配置见 `.env.example`。
 
