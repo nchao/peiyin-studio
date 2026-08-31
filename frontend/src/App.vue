@@ -14,6 +14,7 @@ const busy = ref('')
 const progress = reactive({ done: 0, total: 0, running: false })
 const draft = ref('')
 const showSidebar = ref(false)
+const voiceOpen = ref(true)  // 音色定调面板展开态；进入段落视图后自动收起
 
 // 鉴权门禁：needLogin=true 时盖一层全屏登录框，其余界面不加载
 const needLogin = ref(false)
@@ -39,6 +40,12 @@ const totalDur = computed(() => {
 // 有过期段时禁止导出：后端会拒，前端提前挡住并说明原因
 const canExport = computed(
   () => okCount.value > 0 && staleCount.value === 0 && !progress.running)
+
+// 当前整篇语气的显示名（自定义语气直接回显原串）
+const curStyleLabel = computed(() => {
+  const id = project.value?.default_style
+  return meta.value.styles.find((s) => s.id === id)?.label ?? id ?? '默认'
+})
 
 function say(msg, kind = 'info', sticky = false) {
   toast.msg = msg
@@ -284,6 +291,9 @@ watch(() => project.value?.id, () => {
   fullAudio.value?.pause()
   fullPlaying.value = false
 })
+
+// 视图切换联动音色面板：原稿阶段要定调（展开），段落阶段专注精修（收起）
+watch(view, (v) => { voiceOpen.value = v === 'draft' })
 </script>
 
 <template>
@@ -399,33 +409,53 @@ watch(() => project.value?.id, () => {
           </section>
 
           <aside class="rightbar">
-            <VoicePanel
-              :project="project" :voices="meta.voices" :styles="meta.styles"
-              @patch="patchProject" @toast="say"
-            />
+            <!-- 音色定调：写稿/未合成阶段的主角，合成完折叠成一条 -->
+            <section class="card side-sec">
+              <button class="sec-head" @click="voiceOpen = !voiceOpen">
+                <span class="sec-title">🎙 音色 · 语气</span>
+                <span class="sec-sub muted">
+                  {{ project.default_voice }} · {{ curStyleLabel }}
+                  <span class="caret">{{ voiceOpen ? '▴' : '▾' }}</span>
+                </span>
+              </button>
+              <VoicePanel
+                v-show="voiceOpen"
+                :project="project" :voices="meta.voices" :styles="meta.styles"
+                @patch="patchProject" @toast="say"
+              />
+            </section>
 
-            <div class="card export">
-              <div class="stats">
-                <div><b>{{ okCount }}</b><small>/{{ segments.length }} 段已合成</small></div>
-                <div><b>{{ totalDur }}</b><small>总时长</small></div>
+            <!-- 合成与导出：段落阶段的主角 -->
+            <section class="card export">
+              <div class="progress-ring">
+                <div class="ring-num"><b>{{ okCount }}</b><span class="muted">/ {{ segments.length }}</span></div>
+                <div class="ring-label muted">段已合成 · {{ totalDur }}</div>
+                <div class="mini-bar">
+                  <div class="mini-in" :style="{ width: (okCount / Math.max(segments.length, 1) * 100) + '%' }" />
+                </div>
               </div>
+
               <p v-if="staleCount" class="stale-note">
                 {{ staleCount }} 段音频与当前音色/语气不符，重新合成后才能导出
               </p>
-              <button :disabled="!canExport" @click="toggleFullPlay">
-                {{ fullPlaying ? '停止播放' : '播放全篇' }}
+              <p v-else-if="failCount" class="stale-note err">
+                {{ failCount }} 段合成失败，可点「只合成待办」重试
+              </p>
+
+              <button class="wide" :disabled="!canExport" @click="toggleFullPlay">
+                {{ fullPlaying ? '⏸ 停止' : '▶ 试听全篇' }}
               </button>
-              <button class="primary" :disabled="!canExport" @click="download(api.exportUrl(project.id, 'mp3'))">
-                导出 MP3
+              <button class="primary wide" :disabled="!canExport" @click="download(api.exportUrl(project.id, 'mp3'))">
+                ⬇ 导出 MP3
               </button>
               <div class="row">
-                <button :disabled="!canExport" @click="download(api.exportUrl(project.id, 'wav'))">WAV</button>
-                <button :disabled="!canExport" @click="download(api.srtUrl(project.id))">SRT 字幕</button>
+                <button class="wide" :disabled="!canExport" @click="download(api.exportUrl(project.id, 'wav'))">WAV</button>
+                <button class="wide" :disabled="!canExport" @click="download(api.srtUrl(project.id))">SRT 字幕</button>
               </div>
               <p class="muted tip">
                 字幕用「原稿」文本，不含 [标签]；时间轴按段级对齐，切段越细越准。
               </p>
-            </div>
+            </section>
           </aside>
         </div>
       </template>
@@ -468,25 +498,27 @@ watch(() => project.value?.id, () => {
 .empty:hover { background: none !important; }
 
 /* 主区 */
-.main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
-.topbar { display: flex; align-items: center; gap: 10px; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.topbar { display: flex; align-items: center; gap: 10px; padding: 2px 4px; }
 .burger { display: none; }
-.title { border: none; background: transparent; font-size: 17px; font-weight: 600; padding: 4px 6px; }
-.title:focus { background: var(--panel-2); }
-.stat { font-size: 11px; flex-shrink: 0; }
+.title { border: none; background: transparent; font-size: 18px; font-weight: 600; padding: 5px 8px; border-radius: 8px; }
+.title:hover { background: var(--panel-2); }
+.title:focus { background: var(--panel-2); box-shadow: 0 0 0 3px var(--accent-soft); }
+.stat { font-size: 11px; flex-shrink: 0; padding: 3px 9px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line-soft); }
 
-.toast { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13px; white-space: pre-wrap; }
+.toast { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; white-space: pre-wrap; border: 1px solid transparent; }
 .toast span { flex: 1; }
 .toast.info { background: var(--panel-2); }
-.toast.ok { background: rgba(62, 207, 142, .13); color: #9ae8c4; }
-.toast.warn { background: rgba(224, 163, 62, .13); color: #f0cf94; }
-.toast.err { background: rgba(242, 109, 109, .13); color: #f7b0b0; }
+.toast.ok { background: var(--ok-soft); color: #9ae8c4; border-color: rgba(69,209,154,.25); }
+.toast.warn { background: var(--warn-soft); color: #f0cf94; border-color: rgba(230,173,74,.25); }
+.toast.err { background: var(--err-soft); color: #f7b0b0; border-color: rgba(244,112,112,.25); }
 
 .workspace { flex: 1; min-height: 0; display: flex; gap: 12px; }
 .editor { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-.tabs { display: flex; align-items: center; gap: 6px; padding: 9px 11px; border-bottom: 1px solid var(--line); }
-.tabs > button:not(.sm) { background: transparent; border-color: transparent; }
-.tabs > button.on { background: var(--panel-2); border-color: var(--line); }
+.tabs { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); }
+.tabs > button:not(.sm) { background: transparent; border-color: transparent; font-weight: 500; padding: 6px 14px; }
+.tabs > button:not(.sm):hover { background: var(--panel-2); }
+.tabs > button.on { background: var(--accent-soft); border-color: transparent; color: #a9c8ff; }
 .spacer { flex: 1; }
 
 .draft-pane { flex: 1; display: flex; flex-direction: column; padding: 11px; min-height: 0; }
@@ -497,18 +529,35 @@ watch(() => project.value?.id, () => {
 .bar { position: sticky; top: 0; height: 2px; background: var(--line); z-index: 2; }
 .bar-in { height: 100%; background: var(--accent); transition: width .2s; }
 
-.rightbar { width: 278px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
-.export { padding: 14px; display: flex; flex-direction: column; gap: 9px; }
-.stats { display: flex; gap: 14px; padding-bottom: 4px; }
-.stats > div { display: flex; flex-direction: column; }
-.stats b { font-size: 19px; font-weight: 600; }
-.stats small { font-size: 11px; color: var(--muted); }
-.export .row > button { flex: 1; }
-.tip { margin: 2px 0 0; font-size: 11px; line-height: 1.6; }
-.stale-note {
-  margin: 0; padding: 7px 9px; border-radius: 7px; font-size: 12px; line-height: 1.5;
-  background: rgba(224, 163, 62, .12); color: #f0cf94;
+.rightbar { width: 290px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+
+/* 可折叠的音色定调区 */
+.side-sec { overflow: hidden; }
+.sec-head {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; background: transparent; border: none; border-radius: 0; gap: 8px;
 }
+.sec-head:hover { background: var(--panel-2); }
+.sec-title { font-weight: 600; font-size: 14px; }
+.sec-sub { font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.sec-sub .caret { color: var(--faint); font-size: 10px; }
+
+.export { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.progress-ring { text-align: center; padding: 4px 0 6px; }
+.ring-num { font-size: 15px; }
+.ring-num b { font-size: 30px; font-weight: 700; color: var(--ok); }
+.ring-label { font-size: 12px; margin-top: 2px; }
+.mini-bar { height: 5px; border-radius: 3px; background: var(--panel-3); margin-top: 10px; overflow: hidden; }
+.mini-in { height: 100%; background: linear-gradient(90deg, var(--ok), #5be0ac); border-radius: 3px; transition: width .3s; }
+.export .row { gap: 8px; }
+.export .wide { width: 100%; }
+.export .row > button { flex: 1; }
+.tip { margin: 4px 0 0; font-size: 11px; line-height: 1.6; }
+.stale-note {
+  margin: 0; padding: 8px 11px; border-radius: var(--radius-sm); font-size: 12px; line-height: 1.5;
+  background: var(--warn-soft); color: #f0cf94;
+}
+.stale-note.err { background: var(--err-soft); color: #f7b0b0; }
 
 .blank { flex: 1; display: grid; place-items: center; }
 

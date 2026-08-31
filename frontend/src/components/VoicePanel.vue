@@ -39,7 +39,7 @@ function applyCustom() {
 </script>
 
 <template>
-  <div class="panel card">
+  <div class="panel">
     <div class="field">
       <label>音色（整篇默认，段落可单独覆盖）</label>
       <div class="voice-grid">
@@ -90,19 +90,19 @@ function applyCustom() {
 </template>
 
 <style scoped>
-.panel { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
+.panel { padding: 4px 14px 16px; display: flex; flex-direction: column; gap: 16px; }
 .field { display: flex; flex-direction: column; }
 
-.voice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-.voice { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 10px; text-align: left; }
+.voice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.voice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; text-align: left; border-radius: var(--radius-sm); }
 .voice b { font-weight: 600; }
 .voice small { font-size: 11px; color: var(--muted); }
-.voice.on { border-color: var(--accent); background: rgba(76, 141, 255, .12); }
+.voice.on { border-color: var(--accent-line); background: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-soft); }
 .voice.on small { color: #a8c4f5; }
 
-.style-grid { display: flex; flex-wrap: wrap; gap: 6px; }
-.style { font-size: 12px; padding: 5px 11px; border-radius: 999px; }
-.style.on { border-color: var(--accent); background: rgba(76, 141, 255, .14); color: #cfe0ff; }
+.style-grid { display: flex; flex-wrap: wrap; gap: 7px; }
+.style { font-size: 12px; padding: 6px 13px; border-radius: 999px; }
+.style.on { border-color: var(--accent-line); background: var(--accent-soft); color: #cfe0ff; }
 
 .hint { margin: 6px 0 0; font-size: 11px; color: var(--accent); }
 .try { margin-top: 2px; }
