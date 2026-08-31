@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     mimo_api_key: str = ""
     mimo_base_url: str = "https://api.xiaomimimo.com/v1"
     mimo_tts_model: str = "mimo-v2.5-tts"
+    mimo_clone_model: str = "mimo-v2.5-tts-voiceclone"
 
     llm_base_url: str = "https://api.xiaomimimo.com/v1"
     llm_api_key: str = ""

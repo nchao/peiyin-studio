@@ -35,3 +35,14 @@ CREATE TABLE IF NOT EXISTS audio (
     byte_size   INTEGER NOT NULL,
     created_at  TEXT    NOT NULL
 );
+
+-- 克隆音色（全局共享）。样本音频存 data/samples/<sample_hash>.<ext>，
+-- 与合成产物缓存（audio 表 / data/audio）隔离，不被 purge_orphans 清理。
+CREATE TABLE IF NOT EXISTS voice_clone (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT    NOT NULL,
+    sample_hash  TEXT    NOT NULL,
+    sample_ext   TEXT    NOT NULL DEFAULT 'wav',
+    duration_ms  INTEGER,
+    created_at   TEXT    NOT NULL
+);

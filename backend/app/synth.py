@@ -7,8 +7,36 @@ from typing import AsyncIterator
 
 import httpx
 
-from . import audio_store, db, mimo_tts
+from . import audio_store, db, mimo_tts, sample_store
 from .config import settings
+
+CLONE_PREFIX = "clone:"
+
+
+def parse_clone_id(voice: str | None) -> int | None:
+    """voice 是 'clone:<id>' 则返回 id，否则 None（预置音色）。"""
+    if voice and voice.startswith(CLONE_PREFIX):
+        try:
+            return int(voice[len(CLONE_PREFIX):])
+        except ValueError:
+            return None
+    return None
+
+
+def _hash_factors(voice: str, style: str | None) -> tuple[str, str]:
+    """算出用于缓存 key 的 (voice_key, model)。
+
+    克隆音色的 voice 是 'clone:<id>'，但真正决定音频的是样本内容，所以
+    key 用 'clone:<sample_hash>' —— 换样本才失效，换 id 但同样本仍命中。
+    找不到克隆音色时用原串兜底（合成会失败，key 不撞已有缓存即可）。
+    """
+    cid = parse_clone_id(voice)
+    if cid is None:
+        return voice, settings.mimo_tts_model
+    row = db.get_voice_clone(cid)
+    if row is None:
+        return voice, settings.mimo_clone_model
+    return f"{CLONE_PREFIX}{row['sample_hash']}", settings.mimo_clone_model
 
 
 def expected_hash(seg, project) -> str:
@@ -18,9 +46,8 @@ def expected_hash(seg, project) -> str:
     段落并不会被逐段更新，只靠 status 判断会把过期音频当成已合成。
     """
     voice, style = effective(seg, project)
-    return audio_store.audio_hash(
-        seg["synth_text"], voice, style, settings.mimo_tts_model
-    )
+    voice_key, model = _hash_factors(voice, style)
+    return audio_store.audio_hash(seg["synth_text"], voice_key, style, model)
 
 
 def is_fresh(seg, project) -> bool:
@@ -54,10 +81,28 @@ async def _one(seg, project, sem: asyncio.Semaphore, client: httpx.AsyncClient) 
         db.mark_synth_ok(sid, h, dur)
         return {"id": sid, "seq": seg["seq"], "status": "cached", "duration_ms": dur}
 
+    # 克隆音色：读样本，合成走 voiceclone 分支
+    clone_sample = None
+    cid = parse_clone_id(voice)
+    if cid is not None:
+        row = db.get_voice_clone(cid)
+        if row is None:
+            msg = f"克隆音色已删除（clone:{cid}），请重新选择音色"
+            db.mark_synth_failed(sid, msg)
+            return {"id": sid, "seq": seg["seq"], "status": "failed", "error": msg}
+        try:
+            data = sample_store.load(row["sample_hash"], row["sample_ext"])
+        except OSError:
+            msg = f"克隆音色「{row['name']}」的样本文件缺失"
+            db.mark_synth_failed(sid, msg)
+            return {"id": sid, "seq": seg["seq"], "status": "failed", "error": msg}
+        clone_sample = (data, row["sample_ext"])
+
     async with sem:
         try:
             wav, dur = await mimo_tts.synthesize(
-                seg["synth_text"], voice, style, client=client
+                seg["synth_text"], voice, style,
+                clone_sample=clone_sample, client=client,
             )
         except Exception as exc:  # noqa: BLE001 单段失败不该炸掉整批
             db.mark_synth_failed(sid, str(exc))

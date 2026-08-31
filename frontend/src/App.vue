@@ -5,6 +5,7 @@ import SegmentRow from './components/SegmentRow.vue'
 import VoicePanel from './components/VoicePanel.vue'
 
 const meta = ref({ voices: [], styles: [], key_configured: true })
+const clones = ref([])  // 克隆音色，全局共享
 const projects = ref([])
 const project = ref(null)
 const segments = ref([])
@@ -46,6 +47,16 @@ const curStyleLabel = computed(() => {
   const id = project.value?.default_style
   return meta.value.styles.find((s) => s.id === id)?.label ?? id ?? '默认'
 })
+
+// voice 值 → 显示名：克隆音色 clone:<id> 转成它的名字，预置音色原样
+function voiceLabel(voice) {
+  if (voice?.startsWith('clone:')) {
+    const c = clones.value.find((x) => x.voice === voice)
+    return c ? `${c.name}（克隆）` : '克隆音色(已删)'
+  }
+  return voice
+}
+const curVoiceLabel = computed(() => voiceLabel(project.value?.default_voice))
 
 function say(msg, kind = 'info', sticky = false) {
   toast.msg = msg
@@ -90,6 +101,7 @@ async function bootstrap() {
     if (!meta.value.key_configured) {
       say('未配置 MIMO_API_KEY，合成会失败。填好 .env 里的 key 再重启容器。', 'err')
     }
+    clones.value = await api.listClones()
     projects.value = await api.listProjects()
     if (projects.value.length) await open(projects.value[0].id)
   })
@@ -212,6 +224,32 @@ async function patchSegment(sid, fields) {
   })
 }
 
+async function uploadClone(file, name) {
+  await guard(async () => {
+    await api.uploadClone(file, name)
+    clones.value = await api.listClones()
+    say(`克隆音色「${name}」已添加`, 'ok')
+  }, '上传克隆音色…')
+}
+
+async function removeClone(id, name) {
+  await guard(async () => {
+    try {
+      await api.deleteClone(id, false)
+    } catch (e) {
+      // 被引用时后端返回 409，问用户是否强删
+      if (/仍被/.test(e.message)) {
+        if (!confirm(`${e.message}。仍要删除吗？`)) return
+        await api.deleteClone(id, true)
+      } else {
+        throw e
+      }
+    }
+    clones.value = await api.listClones()
+    say(`已删除克隆音色「${name}」`)
+  })
+}
+
 // ---------- 合成与导出 ----------
 
 async function synthesize(onlyFailed = false) {
@@ -328,7 +366,7 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
         >
           <div class="pmain">
             <span class="pname">{{ p.name }}</span>
-            <small class="muted">{{ p.seg_count }} 段 · {{ p.default_voice }}</small>
+            <small class="muted">{{ p.seg_count }} 段 · {{ voiceLabel(p.default_voice) }}</small>
           </div>
           <button class="sm ghost del" @click.stop="remove(p.id, p.name)">×</button>
         </li>
@@ -401,7 +439,8 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
               </div>
               <SegmentRow
                 v-for="(s, i) in segments" :key="s.id"
-                :seg="s" :index="i" :voices="meta.voices" :styles="meta.styles" :project="project"
+                :seg="s" :index="i" :voices="meta.voices" :styles="meta.styles"
+                :clones="clones" :project="project"
                 @patch="patchSegment"
                 @busy="say($event, 'err')"
               />
@@ -414,14 +453,16 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
               <button class="sec-head" @click="voiceOpen = !voiceOpen">
                 <span class="sec-title">🎙 音色 · 语气</span>
                 <span class="sec-sub muted">
-                  {{ project.default_voice }} · {{ curStyleLabel }}
+                  {{ curVoiceLabel }} · {{ curStyleLabel }}
                   <span class="caret">{{ voiceOpen ? '▴' : '▾' }}</span>
                 </span>
               </button>
               <VoicePanel
                 v-show="voiceOpen"
                 :project="project" :voices="meta.voices" :styles="meta.styles"
+                :clones="clones"
                 @patch="patchProject" @toast="say"
+                @upload-clone="uploadClone" @remove-clone="removeClone"
               />
             </section>
 

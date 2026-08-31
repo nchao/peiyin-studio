@@ -17,7 +17,7 @@ import random
 import httpx
 
 from .config import settings
-from .voices import build_synth_payload_text
+from .voices import build_synth_payload_text, resolve_style_tags
 from .wavutil import duration_ms_of
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
@@ -41,10 +41,35 @@ def _headers() -> dict[str, str]:
 
 
 def _payload(text: str, voice: str) -> dict:
+    """预置音色请求体。voice 是音色名（如"苏打"）。"""
     return {
         "model": settings.mimo_tts_model,
         "messages": [{"role": "assistant", "content": text}],
         "audio": {"format": "wav", "voice": voice},
+        "stream": False,
+    }
+
+
+def _clone_data_url(sample: bytes, ext: str) -> str:
+    """样本字节 → DataURL。实测 voiceclone 的 audio.voice 要 DataURL，
+    不是官方文档写的裸 base64。mime 随样本格式。"""
+    mime = "audio/mpeg" if ext == "mp3" else "audio/wav"
+    return f"data:{mime};base64,{base64.b64encode(sample).decode()}"
+
+
+def _clone_payload(text: str, style_words: str, sample: bytes, ext: str) -> dict:
+    """克隆音色请求体：voiceclone 模型 + 样本 DataURL。
+
+    user 角色放风格描述词，assistant 角色放正文（与 voicedesign 一致）。
+    """
+    messages = []
+    if style_words:
+        messages.append({"role": "user", "content": style_words})
+    messages.append({"role": "assistant", "content": text})
+    return {
+        "model": settings.mimo_clone_model,
+        "messages": messages,
+        "audio": {"format": "wav", "voice": _clone_data_url(sample, ext)},
         "stream": False,
     }
 
@@ -64,13 +89,22 @@ async def synthesize(
     voice: str,
     style: str | None,
     *,
+    clone_sample: tuple[bytes, str] | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> tuple[bytes, int]:
     """合成一段音频，返回 (wav_bytes, duration_ms)。
 
+    clone_sample 为 (样本字节, 扩展名) 时走声音克隆模型；否则用预置音色。
     重试覆盖 429 与 5xx，指数退避 + 抖动。4xx（除 429）直接抛，重试没意义。
     """
-    text = build_synth_payload_text(synth_text, style)
+    if clone_sample is not None:
+        # 克隆分支：风格走 user 消息的描述词，不拼进正文前缀
+        sample, ext = clone_sample
+        style_words = resolve_style_tags(style)
+        payload = _clone_payload(synth_text, style_words, sample, ext)
+    else:
+        text = build_synth_payload_text(synth_text, style)
+        payload = _payload(text, voice)
     url = f"{settings.mimo_base_url.rstrip('/')}/chat/completions"
 
     own_client = client is None
@@ -79,7 +113,7 @@ async def synthesize(
         last_err: Exception | None = None
         for attempt in range(settings.tts_max_retry + 1):
             try:
-                resp = await http.post(url, json=_payload(text, voice), headers=_headers())
+                resp = await http.post(url, json=payload, headers=_headers())
             except httpx.HTTPError as exc:
                 last_err = TTSError(f"请求 MiMo TTS 失败: {exc}")
             else:

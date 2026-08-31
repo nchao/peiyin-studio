@@ -7,6 +7,7 @@ const props = defineProps({
   index: { type: Number, required: true },
   voices: { type: Array, default: () => [] },
   styles: { type: Array, default: () => [] },
+  clones: { type: Array, default: () => [] },
   project: { type: Object, required: true },
 })
 const emit = defineEmits(['patch', 'busy'])
@@ -21,6 +22,14 @@ const inheritedStyle = computed(() => props.project.default_style)
 
 // 这一段实际生效的音色/语气（段级覆盖优先，否则继承项目默认）
 const effVoice = computed(() => props.seg.voice ?? inheritedVoice.value)
+// 是否克隆音色 + 显示名
+const isClone = computed(() => String(effVoice.value).startsWith('clone:'))
+const effVoiceLabel = computed(() => {
+  if (isClone.value) {
+    return props.clones.find((c) => c.voice === effVoice.value)?.name ?? '克隆(已删)'
+  }
+  return effVoice.value
+})
 const effStyleId = computed(() => props.seg.style ?? inheritedStyle.value)
 const effStyleLabel = computed(
   () => props.styles.find((s) => s.id === effStyleId.value)?.label ?? effStyleId.value ?? '默认')
@@ -122,8 +131,9 @@ async function play() {
           :title="overridden ? '本段单独设了音色/语气，点开可改' : '跟随整篇设置，点开可单独改'"
           @click="expanded = !expanded"
         >
-          <span class="voice-dot" :class="{ female: voices.find(v => v.id === effVoice)?.gender === 'female' }" />
-          {{ effVoice }} · {{ effStyleLabel }}
+          <span class="voice-dot"
+                :class="{ female: voices.find(v => v.id === effVoice)?.gender === 'female', clone: isClone }" />
+          {{ effVoiceLabel }} · {{ effStyleLabel }}
           <span class="caret">{{ expanded ? '▴' : '▾' }}</span>
         </button>
 
@@ -150,7 +160,12 @@ async function play() {
           <label>音色</label>
           <select :value="seg.voice ?? ''" @change="patch('voice', $event.target.value || null)">
             <option value="">跟随整篇（{{ inheritedVoice }}）</option>
-            <option v-for="v in voices" :key="v.id" :value="v.id">{{ v.label }} · {{ v.hint }}</option>
+            <optgroup label="预置音色">
+              <option v-for="v in voices" :key="v.id" :value="v.id">{{ v.label }} · {{ v.hint }}</option>
+            </optgroup>
+            <optgroup v-if="clones.length" label="克隆音色（付费）">
+              <option v-for="c in clones" :key="c.voice" :value="c.voice">{{ c.name }}</option>
+            </optgroup>
           </select>
         </div>
         <div class="detail-row">
@@ -244,6 +259,7 @@ async function play() {
 .tag-btn.over { color: #a9c8ff; background: var(--accent-soft); }
 .voice-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .voice-dot.female { background: #e58bc4; }
+.voice-dot.clone { background: var(--warn); }
 .caret { color: var(--faint); font-size: 10px; margin-left: 1px; }
 .spacer { flex: 1; }
 

@@ -25,6 +25,22 @@ export const api = {
 
   meta: () => req('/api/meta'),
 
+  listClones: () => req('/api/voice-clones'),
+  deleteClone: (id, force = false) =>
+    req(`/api/voice-clones/${id}?force=${force}`, { method: 'DELETE' }),
+  async uploadClone(file, name) {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('name', name)
+    const r = await fetch('/api/voice-clones', { method: 'POST', body: fd })
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`
+      try { const d = await r.json(); msg = d.detail ?? msg } catch { /* 忽略 */ }
+      throw new Error(msg)
+    }
+    return r.json()
+  },
+
   listProjects: () => req('/api/projects'),
   createProject: (b) => req('/api/projects', { method: 'POST', ...json(b) }),
   getProject: (id) => req(`/api/projects/${id}`),

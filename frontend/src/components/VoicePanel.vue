@@ -6,12 +6,30 @@ const props = defineProps({
   project: { type: Object, required: true },
   voices: { type: Array, default: () => [] },
   styles: { type: Array, default: () => [] },
+  clones: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['patch', 'toast'])
+const emit = defineEmits(['patch', 'toast', 'upload-clone', 'remove-clone'])
 
 const customStyle = ref('')
 const previewing = ref(false)
 const audioEl = ref(null)
+
+// 上传克隆音色
+const fileInput = ref(null)
+const pendingFile = ref(null)
+const cloneName = ref('')
+
+function pickFile(e) {
+  const f = e.target.files?.[0]
+  if (f) { pendingFile.value = f; if (!cloneName.value) cloneName.value = f.name.replace(/\.[^.]+$/, '') }
+}
+function submitClone() {
+  if (!pendingFile.value || !cloneName.value.trim()) return
+  emit('upload-clone', pendingFile.value, cloneName.value.trim())
+  pendingFile.value = null
+  cloneName.value = ''
+  if (fileInput.value) fileInput.value.value = ''
+}
 
 const SAMPLE = '这段声音用来试听音色和语气，你可以随时切换再试一次。'
 
@@ -53,6 +71,36 @@ function applyCustom() {
           <small>{{ v.hint }}</small>
         </button>
       </div>
+    </div>
+
+    <div class="field">
+      <label>我的克隆音色 <span class="paid-tag">付费</span></label>
+      <div v-if="clones.length" class="voice-grid">
+        <button
+          v-for="c in clones" :key="c.id"
+          class="voice clone"
+          :class="{ on: project.default_voice === c.voice }"
+          @click="emit('patch', { default_voice: c.voice })"
+        >
+          <b>{{ c.name }}</b>
+          <small>{{ c.duration_ms ? (c.duration_ms/1000).toFixed(1)+'s 样本' : '克隆音色' }}</small>
+          <span class="del-clone" title="删除此克隆音色"
+                @click.stop="emit('remove-clone', c.id, c.name)">×</span>
+        </button>
+      </div>
+      <p v-else class="empty-clone muted">还没有克隆音色。上传一段人声样本（3–30s），做出专属音色。</p>
+
+      <!-- 上传入口 -->
+      <div class="upload">
+        <input ref="fileInput" type="file" accept=".wav,.mp3,audio/wav,audio/mpeg"
+               class="file-in" @change="pickFile" />
+        <template v-if="pendingFile">
+          <input v-model="cloneName" class="clone-name" placeholder="给音色起个名，如 孙悟空"
+                 @keyup.enter="submitClone" />
+          <button class="sm primary" :disabled="!cloneName.trim()" @click="submitClone">上传</button>
+        </template>
+      </div>
+      <p class="hint2 muted">克隆音色按次付费合成，注意用量。样本越干净，克隆越像。</p>
     </div>
 
     <div class="field">
@@ -106,4 +154,27 @@ function applyCustom() {
 
 .hint { margin: 6px 0 0; font-size: 11px; color: var(--accent); }
 .try { margin-top: 2px; }
+
+/* 克隆音色 */
+.paid-tag {
+  display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  background: var(--warn-soft); color: var(--warn); margin-left: 4px;
+}
+.voice.clone { position: relative; }
+.voice.clone.on { border-color: var(--warn); background: var(--warn-soft); box-shadow: 0 0 0 3px var(--warn-soft); }
+.del-clone {
+  position: absolute; top: 4px; right: 6px; color: var(--faint); font-size: 14px;
+  line-height: 1; padding: 2px 4px; border-radius: 5px;
+}
+.del-clone:hover { color: var(--err); background: var(--panel-3); }
+.empty-clone { margin: 0 0 8px; font-size: 12px; line-height: 1.6; }
+.upload { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+.file-in { font-size: 12px; flex: 1; min-width: 0; }
+.file-in::file-selector-button {
+  font: inherit; font-size: 12px; padding: 5px 10px; margin-right: 8px;
+  border-radius: 7px; border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--text); cursor: pointer;
+}
+.clone-name { flex: 1; min-width: 120px; font-size: 13px; }
+.hint2 { margin: 8px 0 0; font-size: 11px; line-height: 1.6; }
 </style>

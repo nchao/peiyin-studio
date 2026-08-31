@@ -10,12 +10,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import audio_store, auth, db, export, llm_preprocess, mimo_tts, srt, synth
+from . import (
+    audio_store, auth, db, export, llm_preprocess, mimo_tts,
+    sample_store, srt, synth,
+)
 from .config import settings
 from .voices import STYLE_PRESETS, VOICE_IDS, VOICES
 
@@ -131,6 +134,87 @@ def meta():
     }
 
 
+# ---------- 克隆音色 ----------
+
+MAX_SAMPLE_BYTES = 10 * 1024 * 1024
+MIN_SAMPLE_MS = 3000
+MAX_SAMPLE_MS = 30000
+
+
+def _clone_to_dict(row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "duration_ms": row["duration_ms"],
+        "created_at": row["created_at"],
+        "voice": f"{synth.CLONE_PREFIX}{row['id']}",  # 前端直接拿去当音色值
+    }
+
+
+@app.get("/api/voice-clones")
+def list_voice_clones():
+    return [_clone_to_dict(r) for r in db.list_voice_clones()]
+
+
+@app.post("/api/voice-clones")
+async def create_voice_clone(file: UploadFile = File(...), name: str = Form(...)):
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "音色名不能为空")
+    if len(name) > 50:
+        raise HTTPException(400, "音色名过长（≤50 字）")
+
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in sample_store.ALLOWED_EXT:
+        raise HTTPException(400, "样本仅支持 wav 或 mp3 格式")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "样本文件为空")
+    if len(data) > MAX_SAMPLE_BYTES:
+        raise HTTPException(400, "样本文件过大（≤10MB）")
+
+    dur = sample_store.probe_duration_ms(data, ext)
+    if dur is not None and not (MIN_SAMPLE_MS <= dur <= MAX_SAMPLE_MS):
+        raise HTTPException(
+            400, f"样本时长 {dur/1000:.1f}s 不在推荐范围（3–30s），克隆效果差")
+
+    h = sample_store.save(data, ext)
+    cid = db.create_voice_clone(name, h, ext, dur)
+    return _clone_to_dict(db.get_voice_clone(cid))
+
+
+@app.delete("/api/voice-clones/{cid}")
+def remove_voice_clone(cid: int, force: bool = False):
+    row = db.get_voice_clone(cid)
+    if row is None:
+        raise HTTPException(404, f"克隆音色 {cid} 不存在")
+    refs = db.count_clone_references(cid)
+    if refs and not force:
+        raise HTTPException(
+            409, f"该音色仍被 {refs} 处引用（项目默认或段落），"
+            f"确认删除会让这些位置的音色失效")
+    db.delete_voice_clone(cid)
+    # 没有别的克隆音色共享同一样本文件时才删样本
+    if not db.sample_hash_shared(row["sample_hash"], cid):
+        sample_store.delete(row["sample_hash"], row["sample_ext"])
+    return {"deleted": True, "was_referenced": refs}
+
+
+@app.get("/api/voice-clones/{cid}/sample")
+def voice_clone_sample(cid: int):
+    row = db.get_voice_clone(cid)
+    if row is None:
+        raise HTTPException(404, f"克隆音色 {cid} 不存在")
+    if not sample_store.exists(row["sample_hash"], row["sample_ext"]):
+        raise HTTPException(404, "样本文件缺失")
+    media = "audio/mpeg" if row["sample_ext"] == "mp3" else "audio/wav"
+    return FileResponse(
+        sample_store.path_of(row["sample_hash"], row["sample_ext"]),
+        media_type=media,
+    )
+
+
 # ---------- 项目 ----------
 
 def _row_to_dict(row) -> dict:
@@ -142,6 +226,14 @@ def _require_project(pid: int) -> dict:
     if p is None:
         raise HTTPException(404, f"项目 {pid} 不存在")
     return dict(p)
+
+
+def _valid_voice(voice: str) -> bool:
+    """预置音色名，或指向存在的克隆音色的 clone:<id>。"""
+    cid = synth.parse_clone_id(voice)
+    if cid is not None:
+        return db.get_voice_clone(cid) is not None
+    return voice in VOICE_IDS
 
 
 def _fresh_segments(pid: int, project: dict) -> list[dict]:
@@ -186,7 +278,7 @@ def projects():
 
 @app.post("/api/projects")
 def create_project(body: ProjectCreate):
-    if body.default_voice not in VOICE_IDS:
+    if not _valid_voice(body.default_voice):
         raise HTTPException(400, f"未知音色 {body.default_voice}")
     pid = db.create_project(
         body.name.strip() or "未命名",
@@ -206,7 +298,7 @@ def project_detail(pid: int):
 @app.patch("/api/projects/{pid}")
 def patch_project(pid: int, body: ProjectPatch):
     _require_project(pid)
-    if body.default_voice is not None and body.default_voice not in VOICE_IDS:
+    if body.default_voice is not None and not _valid_voice(body.default_voice):
         raise HTTPException(400, f"未知音色 {body.default_voice}")
     db.update_project(pid, **body.model_dump(exclude_none=True))
     return _require_project(pid)
@@ -291,7 +383,7 @@ def patch_segment(sid: int, body: SegmentPatch):
     seg = db.get_segment(sid)
     if seg is None:
         raise HTTPException(404, f"段落 {sid} 不存在")
-    if body.voice is not None and body.voice and body.voice not in VOICE_IDS:
+    if body.voice is not None and body.voice and not _valid_voice(body.voice):
         raise HTTPException(400, f"未知音色 {body.voice}")
     fields = body.model_dump(exclude_unset=True)
     db.update_segment(sid, **fields)
@@ -323,10 +415,20 @@ async def synthesize(pid: int, only_failed: bool = False):
 @app.post("/api/preview")
 async def preview(body: PreviewReq):
     """单段试听，不落库不进缓存表 —— 用于试音色/语气。"""
-    if body.voice not in VOICE_IDS:
+    if not _valid_voice(body.voice):
         raise HTTPException(400, f"未知音色 {body.voice}")
+    # 克隆音色：读样本走 voiceclone 分支
+    clone_sample = None
+    cid = synth.parse_clone_id(body.voice)
+    if cid is not None:
+        row = db.get_voice_clone(cid)
+        if row is None or not sample_store.exists(row["sample_hash"], row["sample_ext"]):
+            raise HTTPException(400, "克隆音色样本缺失")
+        clone_sample = (sample_store.load(row["sample_hash"], row["sample_ext"]),
+                        row["sample_ext"])
     try:
-        wav, dur = await mimo_tts.synthesize(body.text, body.voice, body.style)
+        wav, dur = await mimo_tts.synthesize(
+            body.text, body.voice, body.style, clone_sample=clone_sample)
     except mimo_tts.TTSError as exc:
         raise HTTPException(502, str(exc)) from exc
     return Response(

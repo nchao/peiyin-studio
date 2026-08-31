@@ -166,3 +166,59 @@ def referenced_hashes() -> set[str]:
             "SELECT DISTINCT audio_hash FROM segment WHERE audio_hash IS NOT NULL"
         ).fetchall()
     return {r["audio_hash"] for r in rows}
+
+
+# ---------- voice_clone ----------
+
+def create_voice_clone(name: str, sample_hash: str, sample_ext: str,
+                       duration_ms: int | None) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO voice_clone(name, sample_hash, sample_ext, duration_ms,"
+            " created_at) VALUES (?,?,?,?,?)",
+            (name, sample_hash, sample_ext, duration_ms, now_iso()),
+        )
+        return int(cur.lastrowid)
+
+
+def list_voice_clones() -> list[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM voice_clone ORDER BY created_at DESC"
+        ).fetchall()
+
+
+def get_voice_clone(cid: int) -> sqlite3.Row | None:
+    with connect() as conn:
+        return conn.execute("SELECT * FROM voice_clone WHERE id=?", (cid,)).fetchone()
+
+
+def delete_voice_clone(cid: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM voice_clone WHERE id=?", (cid,))
+
+
+def sample_hash_shared(sample_hash: str, exclude_id: int) -> bool:
+    """除 exclude_id 外，是否还有别的克隆音色用同一样本文件。
+
+    删除克隆音色时据此决定要不要删样本文件 —— 内容相同的样本共享一份。
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM voice_clone WHERE sample_hash=? AND id<>?",
+            (sample_hash, exclude_id),
+        ).fetchone()
+    return row["n"] > 0
+
+
+def count_clone_references(cid: int) -> int:
+    """有多少段落或项目引用了这个克隆音色（voice = 'clone:<id>'）。"""
+    token = f"clone:{cid}"
+    with connect() as conn:
+        seg = conn.execute(
+            "SELECT COUNT(*) AS n FROM segment WHERE voice=?", (token,)
+        ).fetchone()["n"]
+        proj = conn.execute(
+            "SELECT COUNT(*) AS n FROM project WHERE default_voice=?", (token,)
+        ).fetchone()["n"]
+    return int(seg) + int(proj)
