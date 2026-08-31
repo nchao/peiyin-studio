@@ -1,0 +1,18 @@
+services:
+  peiyin:
+    build: .
+    container_name: peiyin
+    # 随用随开：手动 up / stop，不自动重启
+    restart: "no"
+    ports:
+      - "${PORT:-8756}:8756"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8756/api/meta').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
