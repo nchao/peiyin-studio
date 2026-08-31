@@ -19,6 +19,10 @@ async function req(url, opts = {}) {
 const json = (body) => ({ body: JSON.stringify(body) })
 
 export const api = {
+  authStatus: () => req('/api/auth-status'),
+  login: (password) => req('/api/login', { method: 'POST', ...json({ password }) }),
+  logout: () => req('/api/logout', { method: 'POST' }),
+
   meta: () => req('/api/meta'),
 
   listProjects: () => req('/api/projects'),

@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     tts_max_retry: int = 3
     port: int = 8756
 
+    # 访问密码：留空=不鉴权（本地/局域网直接用）；设值=所有 /api 请求需登录。
+    # 对外域名务必同时走 HTTPS，否则密码与凭证在公网明文传输。
+    app_password: str = ""
+
     # 预处理分块：LLM 输出有 token 上限（实测 4096 截断），长稿必须切块送
     llm_chunk_chars: int = 400
     llm_concurrency: int = 4

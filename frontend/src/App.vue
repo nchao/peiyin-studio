@@ -15,6 +15,12 @@ const progress = reactive({ done: 0, total: 0, running: false })
 const draft = ref('')
 const showSidebar = ref(false)
 
+// 鉴权门禁：needLogin=true 时盖一层全屏登录框，其余界面不加载
+const needLogin = ref(false)
+const loginPwd = ref('')
+const loginBusy = ref(false)
+const loginErr = ref('')
+
 const hasSegments = computed(() => segments.value.length > 0)
 // fresh===false 表示音频与当前音色/语气不符（改过项目设置），不算已合成
 const isFresh = (s) => s.status === 'ok' && s.fresh !== false
@@ -57,6 +63,21 @@ async function guard(fn, label = '') {
 // ---------- 加载 ----------
 
 onMounted(async () => {
+  try {
+    const st = await api.authStatus()
+    if (st.auth_required && !st.logged_in) {
+      needLogin.value = true
+      return
+    }
+  } catch (e) {
+    say('无法连接后端：' + e.message, 'err')
+    return
+  }
+  await bootstrap()
+})
+
+// 登录通过后加载主界面数据
+async function bootstrap() {
   await guard(async () => {
     meta.value = await api.meta()
     if (!meta.value.key_configured) {
@@ -65,7 +86,23 @@ onMounted(async () => {
     projects.value = await api.listProjects()
     if (projects.value.length) await open(projects.value[0].id)
   })
-})
+}
+
+async function doLogin() {
+  if (!loginPwd.value) return
+  loginBusy.value = true
+  loginErr.value = ''
+  try {
+    await api.login(loginPwd.value)
+    needLogin.value = false
+    loginPwd.value = ''
+    await bootstrap()
+  } catch (e) {
+    loginErr.value = e.message || '登录失败'
+  } finally {
+    loginBusy.value = false
+  }
+}
 
 async function refreshList() {
   projects.value = await api.listProjects()
@@ -250,7 +287,23 @@ watch(() => project.value?.id, () => {
 </script>
 
 <template>
-  <div class="app">
+  <!-- 登录门禁：设了访问密码且未登录时盖满全屏 -->
+  <div v-if="needLogin" class="login-mask">
+    <form class="login-box card" @submit.prevent="doLogin">
+      <h2>配音工作台</h2>
+      <p class="login-hint">请输入访问密码</p>
+      <input
+        v-model="loginPwd" type="password" placeholder="访问密码"
+        autofocus autocomplete="current-password"
+      />
+      <p v-if="loginErr" class="login-err">{{ loginErr }}</p>
+      <button class="primary" type="submit" :disabled="loginBusy || !loginPwd">
+        {{ loginBusy ? '登录中…' : '登录' }}
+      </button>
+    </form>
+  </div>
+
+  <div v-else class="app">
     <!-- 侧栏：项目列表 -->
     <aside class="side card" :class="{ open: showSidebar }">
       <div class="side-head">
@@ -388,6 +441,15 @@ watch(() => project.value?.id, () => {
 
 <style scoped>
 .app { display: flex; height: 100vh; gap: 12px; padding: 12px; }
+
+/* 登录门禁 */
+.login-mask { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.login-box { width: 320px; max-width: 100%; padding: 28px 24px; display: flex; flex-direction: column; gap: 12px; }
+.login-box h2 { margin: 0; text-align: center; }
+.login-hint { margin: 0; text-align: center; color: var(--muted, #8a94a6); font-size: 14px; }
+.login-box input { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); font-size: 15px; }
+.login-box button { padding: 10px; font-size: 15px; }
+.login-err { margin: 0; color: #ff6b6b; font-size: 13px; text-align: center; }
 
 /* 侧栏 */
 .side { width: 232px; flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden; }

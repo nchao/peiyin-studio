@@ -1,0 +1,8 @@
+# 国内部署覆盖文件。与 docker-compose.yml 叠加使用：
+#   docker compose -f docker-compose.yml -f docker-compose.cn.yml up -d --build
+# 只改构建用的 Dockerfile，其余（端口、卷、健康检查）沿用主文件。
+services:
+  peiyin:
+    build:
+      context: .
+      dockerfile: Dockerfile.cn

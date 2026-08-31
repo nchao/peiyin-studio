@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import io
 import json
 import re
@@ -9,12 +10,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import audio_store, db, export, llm_preprocess, mimo_tts, srt, synth
+from . import audio_store, auth, db, export, llm_preprocess, mimo_tts, srt, synth
 from .config import settings
 from .voices import STYLE_PRESETS, VOICE_IDS, VOICES
 
@@ -27,6 +28,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="配音工作台", version="1.0.0", lifespan=lifespan)
+app.add_middleware(auth.AuthMiddleware)
 
 
 def _attachment(filename: str) -> dict[str, str]:
@@ -66,6 +68,53 @@ class PreviewReq(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     voice: str = "苏打"
     style: str | None = "calm_narration"
+
+
+# ---------- 鉴权 ----------
+
+class LoginReq(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+
+
+@app.get("/api/auth-status")
+def auth_status(request: Request):
+    """前端开屏探测：是否需要登录、当前是否已登录。"""
+    if not settings.app_password:
+        return {"auth_required": False, "logged_in": True}
+    return {
+        "auth_required": True,
+        "logged_in": auth.token_ok(request.cookies.get(auth.COOKIE_NAME)),
+    }
+
+
+@app.post("/api/login")
+async def login(request: Request, body: LoginReq):
+    if not settings.app_password:
+        return {"logged_in": True}  # 没设密码，随便进
+    if auth.too_many_fails(request):
+        raise HTTPException(429, "尝试过于频繁，请稍后再试")
+    if not hmac.compare_digest(body.password, settings.app_password):
+        await auth.register_fail(request)
+        raise HTTPException(401, "密码错误")
+
+    auth.clear_fails(request)
+    resp = JSONResponse({"logged_in": True})
+    resp.set_cookie(
+        auth.COOKIE_NAME,
+        auth.expected_token(),
+        max_age=auth.COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=auth.is_secure(request),
+    )
+    return resp
+
+
+@app.post("/api/logout")
+def logout():
+    resp = JSONResponse({"logged_in": False})
+    resp.delete_cookie(auth.COOKIE_NAME)
+    return resp
 
 
 # ---------- 元数据 ----------

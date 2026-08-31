@@ -1,0 +1,36 @@
+# 国内网络专用构建文件。基础镜像走加速器，apt/pip/npm 换国内源。
+# 用法：docker compose 里指定 dockerfile: Dockerfile.cn
+# 原 Dockerfile 保持不动，本地/海外构建仍用它。
+
+# ---------- 前端构建 ----------
+FROM docker.m.daocloud.io/library/node:22-alpine AS ui
+WORKDIR /ui
+RUN npm config set registry https://registry.npmmirror.com
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+# ---------- 运行时 ----------
+FROM docker.m.daocloud.io/library/python:3.13-slim
+WORKDIR /app
+
+# apt 换中科大源（trixie=Debian 13，python:3.13-slim 的基础）
+RUN sed -i 's|deb.debian.org|mirrors.ustc.edu.cn|g; s|security.debian.org|mirrors.ustc.edu.cn|g' \
+        /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+
+COPY backend/app ./backend/app
+COPY --from=ui /ui/dist ./frontend/dist
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DATA_DIR=/app/data
+
+EXPOSE 8756
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8756"]
