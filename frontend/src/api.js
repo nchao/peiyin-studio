@@ -26,8 +26,11 @@ export const api = {
   meta: () => req('/api/meta'),
 
   listClones: () => req('/api/voice-clones'),
+  renameClone: (id, name) =>
+    req(`/api/voice-clones/${id}`, { method: 'PATCH', ...json({ name }) }),
   deleteClone: (id, force = false) =>
     req(`/api/voice-clones/${id}?force=${force}`, { method: 'DELETE' }),
+  cloneSampleUrl: (id) => `/api/voice-clones/${id}/sample?t=${Date.now()}`,
   async uploadClone(file, name) {
     const fd = new FormData()
     fd.append('file', file)
@@ -49,9 +52,12 @@ export const api = {
 
   preprocess: (id) => req(`/api/projects/${id}/preprocess`, { method: 'POST' }),
   ruleSplit: (id) => req(`/api/projects/${id}/split`, { method: 'POST' }),
+  importSrt: (id, content) =>
+    req(`/api/projects/${id}/import-srt`, { method: 'POST', ...json({ content }) }),
   replaceSegments: (id, segments) =>
     req(`/api/projects/${id}/segments`, { method: 'PUT', ...json({ segments }) }),
   patchSegment: (sid, b) => req(`/api/segments/${sid}`, { method: 'PATCH', ...json(b) }),
+  synthesizeSegment: (sid) => req(`/api/segments/${sid}/synthesize`, { method: 'POST' }),
 
   segmentAudioUrl: (sid) => `/api/segments/${sid}/audio?t=${Date.now()}`,
   fullPreviewUrl: (id) => `/api/projects/${id}/preview?t=${Date.now()}`,

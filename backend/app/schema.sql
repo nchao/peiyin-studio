@@ -24,7 +24,11 @@ CREATE TABLE IF NOT EXISTS segment (
     audio_hash     TEXT,
     duration_ms    INTEGER,
     status         TEXT    NOT NULL DEFAULT 'pending',
-    error_msg      TEXT
+    error_msg      TEXT,
+    -- 字幕时间轴对齐（导入 SRT 时填入）。NULL = 顺序拼接模式，
+    -- 有值 = 该段音频要对齐到视频的 [start_ms, end_ms] 窗口
+    start_ms       INTEGER,
+    end_ms         INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_segment_project ON segment(project_id, seq);

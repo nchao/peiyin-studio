@@ -26,6 +26,15 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA.read_text(encoding="utf-8"))
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """轻量迁移：给老库补新列。CREATE TABLE IF NOT EXISTS 不会改已存在的表。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(segment)")}
+    for col in ("start_ms", "end_ms"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE segment ADD COLUMN {col} INTEGER")
 
 
 # ---------- project ----------
@@ -74,12 +83,16 @@ def delete_project(pid: int) -> None:
 # ---------- segment ----------
 
 def replace_segments(pid: int, segments: list[dict]) -> None:
-    """整体替换某项目的段落（预处理/重新分段后调用）。"""
+    """整体替换某项目的段落（预处理/重新分段/导入字幕后调用）。
+
+    segments 可含 start_ms/end_ms（导入 SRT 时），普通分段不带则为 NULL。
+    """
     with connect() as conn:
         conn.execute("DELETE FROM segment WHERE project_id=?", (pid,))
         conn.executemany(
             "INSERT INTO segment(project_id, seq, display_text, synth_text, voice,"
-            " style, pause_after_ms, status) VALUES (?,?,?,?,?,?,?, 'pending')",
+            " style, pause_after_ms, start_ms, end_ms, status)"
+            " VALUES (?,?,?,?,?,?,?,?,?, 'pending')",
             [
                 (
                     pid,
@@ -89,11 +102,24 @@ def replace_segments(pid: int, segments: list[dict]) -> None:
                     s.get("voice"),
                     s.get("style"),
                     s.get("pause_after_ms", 0),
+                    s.get("start_ms"),
+                    s.get("end_ms"),
                 )
                 for i, s in enumerate(segments)
             ],
         )
         conn.execute("UPDATE project SET updated_at=? WHERE id=?", (now_iso(), pid))
+
+
+def project_is_timeline(pid: int) -> bool:
+    """项目是否处于字幕时间轴模式（存在任一段带 start_ms）。"""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM segment"
+            " WHERE project_id=? AND start_ms IS NOT NULL",
+            (pid,),
+        ).fetchone()
+    return row["n"] > 0
 
 
 def list_segments(pid: int) -> list[sqlite3.Row]:
@@ -191,6 +217,11 @@ def list_voice_clones() -> list[sqlite3.Row]:
 def get_voice_clone(cid: int) -> sqlite3.Row | None:
     with connect() as conn:
         return conn.execute("SELECT * FROM voice_clone WHERE id=?", (cid,)).fetchone()
+
+
+def rename_voice_clone(cid: int, name: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE voice_clone SET name=? WHERE id=?", (name, cid))
 
 
 def delete_voice_clone(cid: int) -> None:

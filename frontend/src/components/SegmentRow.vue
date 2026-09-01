@@ -9,8 +9,9 @@ const props = defineProps({
   styles: { type: Array, default: () => [] },
   clones: { type: Array, default: () => [] },
   project: { type: Object, required: true },
+  timeline: { type: Boolean, default: false },
 })
-const emit = defineEmits(['patch', 'busy'])
+const emit = defineEmits(['patch', 'busy', 'resynth'])
 
 const expanded = ref(false)   // 展开后才显示音色/语气/停顿/合成文本
 const playing = ref(false)
@@ -41,6 +42,17 @@ const styleLabel = effStyleLabel
 const dur = computed(() =>
   props.seg.duration_ms ? (props.seg.duration_ms / 1000).toFixed(1) + 's' : '',
 )
+
+// 时间轴模式：字幕窗口 [start,end] 与音频溢出
+const fmtTs = (ms) => {
+  const s = Math.floor(ms / 1000)
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+}
+const hasWindow = computed(
+  () => props.timeline && props.seg.start_ms != null && props.seg.end_ms != null)
+const windowLabel = computed(
+  () => hasWindow.value ? `${fmtTs(props.seg.start_ms)}–${fmtTs(props.seg.end_ms)}` : '')
+const overflowMs = computed(() => props.seg.overflow_ms ?? 0)
 
 // 有音频但与当前音色/语气不符 —— 改过项目设置，需要重新合成
 const stale = computed(() => !!props.seg.audio_hash && props.seg.fresh === false)
@@ -85,6 +97,14 @@ function onDisplayInput(e) {
   const v = e.target.value
   // 改字幕文本时，若之前没单独改过合成文本，两者同步
   emit('patch', props.seg.id, modified.value ? { display_text: v } : { display_text: v, synth_text: v })
+}
+
+// 值得单独重跑的段：待合成 / 失败 / 过期。已合成且新鲜的重跑也没变化
+const canResynth = computed(
+  () => state.value === 'pending' || state.value === 'failed' || state.value === 'stale')
+
+function resynth() {
+  emit('resynth', props.seg.id)
 }
 
 async function play() {
@@ -137,6 +157,10 @@ async function play() {
           <span class="caret">{{ expanded ? '▴' : '▾' }}</span>
         </button>
 
+        <span v-if="hasWindow" class="chip win" :class="{ over: overflowMs > 0 }"
+              :title="overflowMs > 0 ? `音频超出字幕窗口 ${(overflowMs/1000).toFixed(1)}s，导出会顺延后续段` : '字幕时间窗口'">
+          🎬 {{ windowLabel }}
+        </span>
         <span v-if="tags.length" class="chip accent" title="LLM 插入的音频标签">
           {{ tags.join(' ') }}
         </span>
@@ -144,11 +168,17 @@ async function play() {
 
         <div class="spacer" />
 
+        <span v-if="overflowMs > 0" class="state-txt warn" title="音频超出字幕时长">超 {{ (overflowMs/1000).toFixed(1) }}s</span>
         <span v-if="stale" class="state-txt warn" :title="stateHint">● 音频过期</span>
         <span v-else-if="state === 'failed'" class="state-txt err">● 合成失败</span>
         <span v-else-if="state === 'ok'" class="state-txt ok">{{ dur || '● 已合成' }}</span>
         <span v-else class="state-txt muted">● 待合成</span>
 
+        <button
+          class="sm ghost resynth-btn" :disabled="!canResynth"
+          :title="canResynth ? '只重合成这一句' : '这句已是最新，无需重合成'"
+          @click="resynth"
+        >↻</button>
         <button class="sm ghost play-btn" :disabled="state !== 'ok'" @click="play">
           {{ playing ? '⏸' : '▶' }}
         </button>
@@ -269,7 +299,10 @@ async function play() {
 .state-txt.err { color: var(--err); }
 .state-txt.muted { color: var(--faint); }
 
-.play-btn { min-width: 30px; text-align: center; }
+.play-btn, .resynth-btn { min-width: 30px; text-align: center; }
+.resynth-btn:not(:disabled) { color: var(--accent); }
+.chip.win { background: var(--accent-soft); color: #a9c8ff; }
+.chip.win.over { background: var(--warn-soft); color: var(--warn); }
 
 /* 展开区 */
 .detail {

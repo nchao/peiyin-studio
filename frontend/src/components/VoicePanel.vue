@@ -8,11 +8,35 @@ const props = defineProps({
   styles: { type: Array, default: () => [] },
   clones: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['patch', 'toast', 'upload-clone', 'remove-clone'])
+const emit = defineEmits(['patch', 'toast', 'upload-clone', 'remove-clone', 'rename-clone'])
 
 const customStyle = ref('')
 const previewing = ref(false)
 const audioEl = ref(null)
+const sampleEl = ref(null)
+const playingSample = ref(0)  // 正在试听的克隆音色 id，0 表示无
+
+// 试听克隆音色的原始样本（不消耗合成，直接放上传的那段人声）
+function playSample(id) {
+  if (playingSample.value === id) {
+    sampleEl.value?.pause()
+    playingSample.value = 0
+    return
+  }
+  playingSample.value = id
+  const el = sampleEl.value
+  el.src = api.cloneSampleUrl(id)
+  el.onended = () => { playingSample.value = 0 }
+  el.onerror = () => { playingSample.value = 0; emit('toast', '样本播放失败', 'err') }
+  el.play().catch((e) => { playingSample.value = 0; emit('toast', `样本播放失败：${e.message}`, 'err') })
+}
+
+function renameClone(c) {
+  const name = prompt('重命名克隆音色', c.name)
+  if (name && name.trim() && name.trim() !== c.name) {
+    emit('rename-clone', c.id, name.trim())
+  }
+}
 
 // 上传克隆音色
 const fileInput = ref(null)
@@ -84,8 +108,13 @@ function applyCustom() {
         >
           <b>{{ c.name }}</b>
           <small>{{ c.duration_ms ? (c.duration_ms/1000).toFixed(1)+'s 样本' : '克隆音色' }}</small>
-          <span class="del-clone" title="删除此克隆音色"
-                @click.stop="emit('remove-clone', c.id, c.name)">×</span>
+          <span class="clone-acts">
+            <span class="c-act" title="试听样本"
+                  @click.stop="playSample(c.id)">{{ playingSample === c.id ? '⏸' : '▶' }}</span>
+            <span class="c-act" title="重命名" @click.stop="renameClone(c)">✎</span>
+            <span class="c-act del" title="删除此克隆音色"
+                  @click.stop="emit('remove-clone', c.id, c.name)">×</span>
+          </span>
         </button>
       </div>
       <p v-else class="empty-clone muted">还没有克隆音色。上传一段人声样本（3–30s），做出专属音色。</p>
@@ -134,6 +163,7 @@ function applyCustom() {
       {{ previewing ? '合成中…' : '试听当前音色 + 语气' }}
     </button>
     <audio ref="audioEl" hidden />
+    <audio ref="sampleEl" hidden />
   </div>
 </template>
 
@@ -160,13 +190,19 @@ function applyCustom() {
   display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px;
   background: var(--warn-soft); color: var(--warn); margin-left: 4px;
 }
-.voice.clone { position: relative; }
+.voice.clone { position: relative; padding-right: 12px; }
 .voice.clone.on { border-color: var(--warn); background: var(--warn-soft); box-shadow: 0 0 0 3px var(--warn-soft); }
-.del-clone {
-  position: absolute; top: 4px; right: 6px; color: var(--faint); font-size: 14px;
-  line-height: 1; padding: 2px 4px; border-radius: 5px;
+.clone-acts {
+  position: absolute; top: 4px; right: 5px; display: inline-flex; gap: 1px;
+  opacity: 0; transition: opacity .12s;
 }
-.del-clone:hover { color: var(--err); background: var(--panel-3); }
+.voice.clone:hover .clone-acts, .voice.clone.on .clone-acts { opacity: 1; }
+.c-act {
+  color: var(--muted); font-size: 12px; line-height: 1; padding: 3px 4px;
+  border-radius: 5px; min-width: 18px; text-align: center;
+}
+.c-act:hover { color: var(--text); background: var(--panel-3); }
+.c-act.del:hover { color: var(--err); }
 .empty-clone { margin: 0 0 8px; font-size: 12px; line-height: 1.6; }
 .upload { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
 .file-in { font-size: 12px; flex: 1; min-width: 0; }

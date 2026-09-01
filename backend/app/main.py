@@ -67,6 +67,10 @@ class SegmentsReplace(BaseModel):
     segments: list[dict]
 
 
+class SrtImport(BaseModel):
+    content: str = Field(min_length=1, max_length=2_000_000)
+
+
 class PreviewReq(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     voice: str = "苏打"
@@ -184,6 +188,18 @@ async def create_voice_clone(file: UploadFile = File(...), name: str = Form(...)
     return _clone_to_dict(db.get_voice_clone(cid))
 
 
+class CloneRename(BaseModel):
+    name: str = Field(min_length=1, max_length=50)
+
+
+@app.patch("/api/voice-clones/{cid}")
+def rename_voice_clone(cid: int, body: CloneRename):
+    if db.get_voice_clone(cid) is None:
+        raise HTTPException(404, f"克隆音色 {cid} 不存在")
+    db.rename_voice_clone(cid, body.name.strip())
+    return _clone_to_dict(db.get_voice_clone(cid))
+
+
 @app.delete("/api/voice-clones/{cid}")
 def remove_voice_clone(cid: int, force: bool = False):
     row = db.get_voice_clone(cid)
@@ -267,6 +283,11 @@ def _segments_of(pid: int, project: dict | None = None) -> list[dict]:
         voice, style = synth.effective(row, p)
         d["effective_voice"] = voice
         d["effective_style"] = style
+        # 时间轴模式：算出该段的字幕窗口与音频溢出，供前端标红
+        if d.get("start_ms") is not None and d.get("end_ms") is not None:
+            d["window_ms"] = int(d["end_ms"]) - int(d["start_ms"])
+            dur = d.get("duration_ms")
+            d["overflow_ms"] = max(0, int(dur) - d["window_ms"]) if dur else 0
         out.append(d)
     return out
 
@@ -292,7 +313,11 @@ def create_project(body: ProjectCreate):
 @app.get("/api/projects/{pid}")
 def project_detail(pid: int):
     p = _require_project(pid)
-    return {"project": p, "segments": _segments_of(pid, p)}
+    return {
+        "project": p,
+        "segments": _segments_of(pid, p),
+        "timeline": db.project_is_timeline(pid),
+    }
 
 
 @app.patch("/api/projects/{pid}")
@@ -355,6 +380,38 @@ def split_by_rule(pid: int):
     return {"mode": "rule", "segments": _segments_of(pid, p)}
 
 
+@app.post("/api/projects/{pid}/import-srt")
+def import_srt(pid: int, body: SrtImport):
+    """导入 SRT 字幕：每条字幕成一段，带上 start_ms/end_ms 进入时间轴模式。
+
+    合成文本默认等于字幕文本，用户可在段落里单独改读法。原稿(raw_text)
+    也一并填成字幕文本拼接，方便对照。
+    """
+    p = _require_project(pid)
+    try:
+        entries = srt.parse_srt(body.content)
+    except srt.SrtParseError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    segments = [
+        {
+            "display_text": e["display_text"],
+            "synth_text": e["display_text"],
+            "start_ms": e["start_ms"],
+            "end_ms": e["end_ms"],
+        }
+        for e in entries
+    ]
+    db.replace_segments(pid, segments)
+    # 原稿存一份纯文本，切回原稿视图时能看到
+    db.update_project(pid, raw_text="\n".join(e["display_text"] for e in entries))
+    return {
+        "mode": "srt",
+        "count": len(segments),
+        "segments": _segments_of(pid, _require_project(pid)),
+    }
+
+
 @app.put("/api/projects/{pid}/segments")
 def replace_segments(pid: int, body: SegmentsReplace):
     _require_project(pid)
@@ -412,6 +469,20 @@ async def synthesize(pid: int, only_failed: bool = False):
     )
 
 
+@app.post("/api/segments/{sid}/synthesize")
+async def synthesize_segment(sid: int):
+    """只合成/重合成单段。用于失败重试、改完一句只重跑这一句。"""
+    seg = db.get_segment(sid)
+    if seg is None:
+        raise HTTPException(404, f"段落 {sid} 不存在")
+    r = await synth.synthesize_one(sid)
+    if r.get("status") == "error":
+        raise HTTPException(400, r.get("error", "合成失败"))
+    p = _require_project(seg["project_id"])
+    updated = next((s for s in _segments_of(seg["project_id"], p) if s["id"] == sid), None)
+    return {"result": r, "segment": updated}
+
+
 @app.post("/api/preview")
 async def preview(body: PreviewReq):
     """单段试听，不落库不进缓存表 —— 用于试音色/语气。"""
@@ -464,7 +535,7 @@ def preview_full(pid: int):
     """
     p = _require_project(pid)
     try:
-        wav, _ = export.concat_wav(_fresh_segments(pid, p))
+        wav = _concat_for_export(pid, _fresh_segments(pid, p))
     except export.ExportError as exc:
         raise HTTPException(400, str(exc)) from exc
     return Response(
@@ -474,13 +545,22 @@ def preview_full(pid: int):
     )
 
 
+def _concat_for_export(pid: int, segs: list[dict]) -> bytes:
+    """按项目模式拼接：时间轴模式贴 start_ms，顺序模式累加。"""
+    if db.project_is_timeline(pid):
+        wav, _places = export.concat_wav_timeline(segs)
+    else:
+        wav, _offsets = export.concat_wav(segs)
+    return wav
+
+
 @app.get("/api/projects/{pid}/export")
 def export_audio(pid: int, fmt: str = "mp3"):
     p = _require_project(pid)
     if fmt not in {"mp3", "wav"}:
         raise HTTPException(400, "fmt 只支持 mp3 或 wav")
     try:
-        wav, _offsets = export.concat_wav(_fresh_segments(pid, p))
+        wav = _concat_for_export(pid, _fresh_segments(pid, p))
         data = wav if fmt == "wav" else export.wav_to_mp3(wav)
     except export.ExportError as exc:
         raise HTTPException(400, str(exc)) from exc

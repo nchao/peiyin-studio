@@ -114,6 +114,30 @@ async def _one(seg, project, sem: asyncio.Semaphore, client: httpx.AsyncClient) 
     return {"id": sid, "seq": seg["seq"], "status": "ok", "duration_ms": dur}
 
 
+async def synthesize_one(
+    sid: int, *, client: httpx.AsyncClient | None = None
+) -> dict:
+    """只合成单段。命中缓存也会刷新 status，用于「重合成这一句」。
+
+    返回 _one 的结果 dict（status: ok/cached/failed），段不存在返回 error。
+    """
+    seg = db.get_segment(sid)
+    if seg is None:
+        return {"id": sid, "status": "error", "error": f"段落 {sid} 不存在"}
+    project = db.get_project(seg["project_id"])
+    if project is None:
+        return {"id": sid, "status": "error", "error": "所属项目不存在"}
+
+    sem = asyncio.Semaphore(1)
+    own = client is None
+    http = client or httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0))
+    try:
+        return await _one(seg, project, sem, http)
+    finally:
+        if own:
+            await http.aclose()
+
+
 async def synthesize_project(
     pid: int, *, only_failed: bool = False, client: httpx.AsyncClient | None = None
 ) -> AsyncIterator[dict]:

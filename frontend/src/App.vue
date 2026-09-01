@@ -16,6 +16,8 @@ const progress = reactive({ done: 0, total: 0, running: false })
 const draft = ref('')
 const showSidebar = ref(false)
 const voiceOpen = ref(true)  // 音色定调面板展开态；进入段落视图后自动收起
+const timeline = ref(false)  // 字幕时间轴模式（导入 SRT 后为真）
+const srtInput = ref(null)   // 隐藏的 SRT 文件选择框
 
 // 鉴权门禁：needLogin=true 时盖一层全屏登录框，其余界面不加载
 const needLogin = ref(false)
@@ -30,6 +32,9 @@ const okCount = computed(() => segments.value.filter(isFresh).length)
 const staleCount = computed(
   () => segments.value.filter((s) => s.audio_hash && s.fresh === false).length)
 const failCount = computed(() => segments.value.filter((s) => s.status === 'failed').length)
+// 时间轴模式下音频超出字幕窗口的段数 —— 导出会顺延，提示用户精简
+const overflowCount = computed(
+  () => segments.value.filter((s) => (s.overflow_ms ?? 0) > 0).length)
 // 待办 = 没合成的 + 失败的 + 过期的，也就是「合成全部」实际要跑的段数
 const todoCount = computed(() => segments.value.length - okCount.value)
 const totalDur = computed(() => {
@@ -132,6 +137,7 @@ async function open(id) {
     const d = await api.getProject(id)
     project.value = d.project
     segments.value = d.segments
+    timeline.value = d.timeline
     draft.value = d.project.raw_text
     view.value = d.segments.length ? 'segments' : 'draft'
     showSidebar.value = false
@@ -181,10 +187,13 @@ async function flushDraft() {
 }
 
 async function smartSplit() {
+  if (timeline.value &&
+      !confirm('当前是字幕时间轴模式，重新分段会丢弃字幕时间戳，退回普通拼接。确定吗？')) return
   await guard(async () => {
     await flushDraft()
     const r = await api.preprocess(project.value.id)
     segments.value = r.segments
+    timeline.value = false
     view.value = 'segments'
     if (r.mode === 'rule') say(r.warning, 'warn', true)
     else say(`已分 ${r.segments.length} 段，LLM 已插入语气标签和读法改写`, 'ok', true)
@@ -192,13 +201,40 @@ async function smartSplit() {
 }
 
 async function plainSplit() {
+  if (timeline.value &&
+      !confirm('当前是字幕时间轴模式，重新分段会丢弃字幕时间戳，退回普通拼接。确定吗？')) return
   await guard(async () => {
     await flushDraft()
     const r = await api.ruleSplit(project.value.id)
     segments.value = r.segments
+    timeline.value = false
     view.value = 'segments'
     say(`按标点分了 ${r.segments.length} 段，未做任何文本改动`)
   }, '分段中…')
+}
+
+function pickSrt() {
+  srtInput.value?.click()
+}
+
+async function onSrtFile(e) {
+  const f = e.target.files?.[0]
+  if (f) {
+    if (segments.value.length &&
+        !confirm('导入字幕会替换当前所有段落，确定继续吗？')) {
+      e.target.value = ''
+      return
+    }
+    const content = await f.text()
+    await guard(async () => {
+      const r = await api.importSrt(project.value.id, content)
+      segments.value = r.segments
+      timeline.value = true
+      view.value = 'segments'
+      say(`已导入 ${r.count} 条字幕，进入时间轴对齐模式`, 'ok', true)
+    }, '导入字幕…')
+  }
+  e.target.value = ''
 }
 
 async function patchProject(fields) {
@@ -221,6 +257,23 @@ async function patchSegment(sid, fields) {
     const updated = await api.patchSegment(sid, fields)
     const i = segments.value.findIndex((s) => s.id === sid)
     if (i >= 0) segments.value[i] = updated
+  })
+}
+
+// 单段重合成：改完一句只重跑这一句，不必整篇重来
+async function resynthSegment(sid) {
+  await guard(async () => {
+    const r = await api.synthesizeSegment(sid)
+    const i = segments.value.findIndex((s) => s.id === sid)
+    if (i >= 0 && r.segment) segments.value[i] = r.segment
+    if (r.result.status === 'failed') say(r.result.error || '合成失败', 'err')
+  }, '合成中…')
+}
+
+async function renameClone(id, name) {
+  await guard(async () => {
+    await api.renameClone(id, name)
+    clones.value = await api.listClones()
   })
 }
 
@@ -402,6 +455,7 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
               </button>
               <div class="spacer" />
               <template v-if="view === 'draft'">
+                <button class="sm" :disabled="!!busy" @click="pickSrt" title="导入 SRT 字幕，按字幕时间轴对齐配音">导入字幕</button>
                 <button class="sm" :disabled="!draft.trim() || !!busy" @click="plainSplit">按标点分段</button>
                 <button class="sm primary" :disabled="!draft.trim() || !!busy" @click="smartSplit">
                   {{ busy === 'LLM 处理中…' ? 'LLM 处理中…' : '智能分段' }}
@@ -440,8 +494,9 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
               <SegmentRow
                 v-for="(s, i) in segments" :key="s.id"
                 :seg="s" :index="i" :voices="meta.voices" :styles="meta.styles"
-                :clones="clones" :project="project"
+                :clones="clones" :project="project" :timeline="timeline"
                 @patch="patchSegment"
+                @resynth="resynthSegment"
                 @busy="say($event, 'err')"
               />
             </div>
@@ -463,6 +518,7 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
                 :clones="clones"
                 @patch="patchProject" @toast="say"
                 @upload-clone="uploadClone" @remove-clone="removeClone"
+                @rename-clone="renameClone"
               />
             </section>
 
@@ -476,11 +532,17 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
                 </div>
               </div>
 
+              <p v-if="timeline" class="tl-note">
+                🎬 字幕时间轴模式 · 音轨按字幕起始时间对齐
+              </p>
               <p v-if="staleCount" class="stale-note">
                 {{ staleCount }} 段音频与当前音色/语气不符，重新合成后才能导出
               </p>
               <p v-else-if="failCount" class="stale-note err">
                 {{ failCount }} 段合成失败，可点「只合成待办」重试
+              </p>
+              <p v-if="overflowCount" class="stale-note">
+                {{ overflowCount }} 段音频超出字幕时长，导出会顺延后续段，建议精简文本或调快语速
               </p>
 
               <button class="wide" :disabled="!canExport" @click="toggleFullPlay">
@@ -494,7 +556,8 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
                 <button class="wide" :disabled="!canExport" @click="download(api.srtUrl(project.id))">SRT 字幕</button>
               </div>
               <p class="muted tip">
-                字幕用「原稿」文本，不含 [标签]；时间轴按段级对齐，切段越细越准。
+                <template v-if="timeline">字幕导出用导入的原始时间轴，与视频画面严格对齐。</template>
+                <template v-else>字幕用「原稿」文本，不含 [标签]；时间轴按段级对齐，切段越细越准。</template>
               </p>
             </section>
           </aside>
@@ -506,6 +569,7 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
       </div>
 
       <audio ref="fullAudio" hidden />
+      <input ref="srtInput" type="file" accept=".srt,text/plain" hidden @change="onSrtFile" />
     </main>
   </div>
 </template>
@@ -599,6 +663,10 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
   background: var(--warn-soft); color: #f0cf94;
 }
 .stale-note.err { background: var(--err-soft); color: #f7b0b0; }
+.tl-note {
+  margin: 0; padding: 8px 11px; border-radius: var(--radius-sm); font-size: 12px;
+  background: var(--accent-soft); color: #a9c8ff;
+}
 
 .blank { flex: 1; display: grid; place-items: center; }
 
