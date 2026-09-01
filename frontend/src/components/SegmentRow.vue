@@ -163,7 +163,7 @@ async function play() {
             <optgroup label="预置音色">
               <option v-for="v in voices" :key="v.id" :value="v.id">{{ v.label }} · {{ v.hint }}</option>
             </optgroup>
-            <optgroup v-if="clones.length" label="克隆音色（付费）">
+            <optgroup v-if="clones.length" label="克隆音色">
               <option v-for="c in clones" :key="c.voice" :value="c.voice">{{ c.name }}</option>
             </optgroup>
           </select>

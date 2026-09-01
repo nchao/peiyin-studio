@@ -74,7 +74,7 @@ function applyCustom() {
     </div>
 
     <div class="field">
-      <label>我的克隆音色 <span class="paid-tag">付费</span></label>
+      <label>我的克隆音色 <span class="paid-tag">限时免费</span></label>
       <div v-if="clones.length" class="voice-grid">
         <button
           v-for="c in clones" :key="c.id"
@@ -100,7 +100,7 @@ function applyCustom() {
           <button class="sm primary" :disabled="!cloneName.trim()" @click="submitClone">上传</button>
         </template>
       </div>
-      <p class="hint2 muted">克隆音色按次付费合成，注意用量。样本越干净，克隆越像。</p>
+      <p class="hint2 muted">克隆音色走 voiceclone 模型（MiMo 当前限时免费，后续可能收费）。样本越干净，克隆越像。</p>
     </div>
 
     <div class="field">
