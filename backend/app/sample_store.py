@@ -26,12 +26,14 @@ class TranscodeError(RuntimeError):
     pass
 
 
-def transcode_to_wav(data: bytes, src_ext: str) -> bytes:
-    """把任意支持的音频转成单声道 PCM16 WAV。
+def transcode_to_wav(data: bytes, src_ext: str, max_ms: int | None = None,
+                     start_ms: int = 0) -> bytes:
+    """把任意支持的音频转成单声道 PCM16 WAV，可选从 start_ms 起截取 max_ms 毫秒。
 
     输入走临时文件而非 stdin —— m4a/mp4 的 moov atom 可能在文件尾，管道
     不可 seek 时 ffmpeg 解不了。转单声道（人声克隆足够，且 MiMo 输出本就
-    是单声道），保留原采样率避免降质。
+    是单声道），保留原采样率避免降质。样本过长时从中间取一段（start_ms>0），
+    避开开头常见的静音/换气。-ss 放在 -i 后做精确定位。
     """
     import tempfile
 
@@ -41,12 +43,14 @@ def transcode_to_wav(data: bytes, src_ext: str) -> bytes:
             f.write(data)
             src = f.name
         dst = src + ".out.wav"
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src]
+        if start_ms > 0:
+            cmd += ["-ss", f"{start_ms / 1000:.3f}"]
+        if max_ms is not None and max_ms > 0:
+            cmd += ["-t", f"{max_ms / 1000:.3f}"]
+        cmd += ["-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", dst]
         try:
-            proc = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                 "-i", src, "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", dst],
-                capture_output=True, timeout=120,
-            )
+            proc = subprocess.run(cmd, capture_output=True, timeout=120)
         except FileNotFoundError as exc:
             raise TranscodeError("未找到 ffmpeg，无法处理样本") from exc
         except subprocess.TimeoutExpired as exc:

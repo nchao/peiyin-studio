@@ -8,7 +8,7 @@ const props = defineProps({
   styles: { type: Array, default: () => [] },
   clones: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['patch', 'toast', 'upload-clone', 'remove-clone', 'rename-clone'])
+const emit = defineEmits(['patch', 'toast', 'clones-changed', 'remove-clone', 'rename-clone'])
 
 const customStyle = ref('')
 const previewing = ref(false)
@@ -42,17 +42,40 @@ function renameClone(c) {
 const fileInput = ref(null)
 const pendingFile = ref(null)
 const cloneName = ref('')
+const uploading = ref(false)
 
 function pickFile(e) {
   const f = e.target.files?.[0]
-  if (f) { pendingFile.value = f; if (!cloneName.value) cloneName.value = f.name.replace(/\.[^.]+$/, '') }
+  if (f) {
+    pendingFile.value = f
+    cloneName.value = f.name.replace(/\.[^.]+$/, '')  // 默认用文件名当音色名
+  }
 }
-function submitClone() {
-  if (!pendingFile.value || !cloneName.value.trim()) return
-  emit('upload-clone', pendingFile.value, cloneName.value.trim())
+
+function cancelPick() {
   pendingFile.value = null
   cloneName.value = ''
   if (fileInput.value) fileInput.value.value = ''
+}
+
+async function submitClone() {
+  if (!pendingFile.value || !cloneName.value.trim() || uploading.value) return
+  uploading.value = true
+  try {
+    const name = cloneName.value.trim()
+    const r = await api.uploadClone(pendingFile.value, name)
+    const tip = r?.truncated
+      ? `克隆音色「${name}」已添加（样本较长，已自动从中间截取 15s）`
+      : `克隆音色「${name}」已添加`
+    emit('toast', tip, 'ok')
+    emit('clones-changed')          // 让父组件刷新克隆列表
+    cancelPick()
+  } catch (e) {
+    // 失败时保留已选文件和名字，改完再传，不用重新选
+    emit('toast', `上传失败：${e.message}`, 'err')
+  } finally {
+    uploading.value = false
+  }
 }
 
 const SAMPLE = '这段声音用来试听音色和语气，你可以随时切换再试一次。'
@@ -119,18 +142,28 @@ function applyCustom() {
       </div>
       <p v-else class="empty-clone muted">还没有克隆音色。上传一段人声样本（3–30s，wav/mp3/m4a/flac 等），做出专属音色。</p>
 
-      <!-- 上传入口 -->
-      <div class="upload">
-        <input ref="fileInput" type="file"
-               accept=".wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.wma,audio/*"
-               class="file-in" @change="pickFile" />
-        <template v-if="pendingFile">
-          <input v-model="cloneName" class="clone-name" placeholder="给音色起个名，如 孙悟空"
-                 @keyup.enter="submitClone" />
-          <button class="sm primary" :disabled="!cloneName.trim()" @click="submitClone">上传</button>
-        </template>
+      <!-- 上传入口：未选文件只显示一个按钮，选完文件展开成填名+确认的卡片 -->
+      <input ref="fileInput" type="file" hidden
+             accept=".wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.wma,audio/*"
+             @change="pickFile" />
+
+      <button v-if="!pendingFile" class="pick-btn" :disabled="uploading"
+              @click="fileInput?.click()">
+        ＋ 上传人声样本
+      </button>
+
+      <div v-else class="upload-card">
+        <div class="picked" :title="pendingFile.name">📄 {{ pendingFile.name }}</div>
+        <input v-model="cloneName" class="clone-name" placeholder="给音色起个名，如 孙悟空"
+               :disabled="uploading" @keyup.enter="submitClone" />
+        <div class="upload-acts">
+          <button class="sm ghost" :disabled="uploading" @click="cancelPick">取消</button>
+          <button class="sm primary" :disabled="!cloneName.trim() || uploading" @click="submitClone">
+            {{ uploading ? '上传中…' : '确认上传' }}
+          </button>
+        </div>
       </div>
-      <p class="hint2 muted">克隆音色走 voiceclone 模型（MiMo 当前限时免费，后续可能收费）。样本越干净，克隆越像。</p>
+      <p class="hint2 muted">支持 wav/mp3/m4a/aac/flac/ogg/opus 等，至少 3s；超过 15s 会自动从中间截取一段。样本越干净，克隆越像。</p>
     </div>
 
     <div class="field">
@@ -205,13 +238,19 @@ function applyCustom() {
 .c-act:hover { color: var(--text); background: var(--panel-3); }
 .c-act.del:hover { color: var(--err); }
 .empty-clone { margin: 0 0 8px; font-size: 12px; line-height: 1.6; }
-.upload { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
-.file-in { font-size: 12px; flex: 1; min-width: 0; }
-.file-in::file-selector-button {
-  font: inherit; font-size: 12px; padding: 5px 10px; margin-right: 8px;
-  border-radius: 7px; border: 1px solid var(--line); background: var(--panel-2);
-  color: var(--text); cursor: pointer;
+
+/* 上传：未选文件是一个虚线大按钮，选完展开成填名卡片 */
+.pick-btn {
+  width: 100%; padding: 10px; border: 1px dashed var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2); color: var(--muted); font-size: 13px; cursor: pointer;
 }
-.clone-name { flex: 1; min-width: 120px; font-size: 13px; }
+.pick-btn:hover:not(:disabled) { border-color: var(--accent-line); color: #a9c8ff; background: var(--accent-soft); }
+.upload-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  border: 1px solid var(--accent-line); border-radius: var(--radius-sm); background: var(--accent-soft);
+}
+.picked { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clone-name { font-size: 13px; padding: 7px 9px; }
+.upload-acts { display: flex; gap: 7px; justify-content: flex-end; }
 .hint2 { margin: 8px 0 0; font-size: 11px; line-height: 1.6; }
 </style>

@@ -89,6 +89,58 @@ def test_非wav格式转码后存成wav(client):
     assert sample_store.exists(row["sample_hash"], "wav")
 
 
+def test_超长样本自动从中间截取15s(client):
+    from app.wavutil import duration_ms_of
+    wav = make_wav(45000)  # 45s，超过 15s 上限
+    r = client.post(
+        "/api/voice-clones",
+        files={"file": ("长.wav", wav, "audio/wav")},
+        data={"name": "长样本"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["truncated"] is True
+    assert r.json()["duration_ms"] == 15000
+    # 实际落盘的样本被截到 15s（允许 ffmpeg 边界几十 ms 误差）
+    row = db.get_voice_clone(r.json()["id"])
+    stored = sample_store.load(row["sample_hash"], row["sample_ext"])
+    assert abs(duration_ms_of(stored) - 15000) < 200
+
+
+def test_正常时长不截断(client):
+    wav = make_wav(8000)
+    r = client.post(
+        "/api/voice-clones",
+        files={"file": ("正常.wav", wav, "audio/wav")},
+        data={"name": "正常样本"},
+    )
+    assert r.status_code == 200
+    assert r.json()["truncated"] is False
+
+
+def test_太短样本被拒(client):
+    wav = make_wav(1500)  # 1.5s，短于 3s 下限
+    r = client.post(
+        "/api/voice-clones",
+        files={"file": ("短.wav", wav, "audio/wav")},
+        data={"name": "短样本"},
+    )
+    assert r.status_code == 400
+    assert "太短" in r.text
+
+
+def test_transcode从中间截取而非开头():
+    """前半静音、后半满幅的音频，居中截取应取到有声段（不是纯开头静音）。"""
+    from app.wavutil import SAMPLE_RATE, build_wav, parse_wav
+    half = SAMPLE_RATE * 20  # 20s 样本点
+    pcm = b"\x00\x00" * half + b"\xff\x7f" * half  # 前20s静音 + 后20s满幅
+    wav = build_wav(pcm)
+    # 40s 音频，居中截 15s → 起点 (40-15)/2=12.5s，覆盖 12.5~27.5s，含后半有声段
+    out = sample_store.transcode_to_wav(wav, "wav", max_ms=15000, start_ms=12500)
+    body = parse_wav(out).pcm
+    # 截出的片段里必须含非静音样本，证明取到了后半而非纯开头静音
+    assert any(body[i:i+2] != b"\x00\x00" for i in range(0, len(body), 2))
+
+
 def test_损坏的音频转码失败返回400(client):
     r = client.post(
         "/api/voice-clones",

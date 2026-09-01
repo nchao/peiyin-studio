@@ -277,12 +277,9 @@ async function renameClone(id, name) {
   })
 }
 
-async function uploadClone(file, name) {
-  await guard(async () => {
-    await api.uploadClone(file, name)
-    clones.value = await api.listClones()
-    say(`克隆音色「${name}」已添加`, 'ok')
-  }, '上传克隆音色…')
+// 克隆列表变化后刷新（上传/重命名在 VoicePanel 内部完成，这里只重取）
+async function refreshClones() {
+  clones.value = await api.listClones()
 }
 
 async function removeClone(id, name) {
@@ -383,8 +380,11 @@ watch(() => project.value?.id, () => {
   fullPlaying.value = false
 })
 
-// 视图切换联动音色面板：原稿阶段要定调（展开），段落阶段专注精修（收起）
-watch(view, (v) => { voiceOpen.value = v === 'draft' })
+// 视图切换联动音色面板：原稿阶段要定调（展开），段落阶段专注精修（收起）。
+// 仅桌面端收起 —— 手机端竖排后音色面板本就在合成区上方、不抢空间，
+// 自动收起反而把常用的音色/克隆入口藏进一条不显眼的标题里。
+const isNarrow = () => window.matchMedia('(max-width: 900px)').matches
+watch(view, (v) => { voiceOpen.value = v === 'draft' || isNarrow() })
 </script>
 
 <template>
@@ -405,11 +405,17 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
   </div>
 
   <div v-else class="app">
+    <!-- 手机端侧栏遮罩：点空白处关闭抽屉（桌面端 CSS 隐藏） -->
+    <div v-if="showSidebar" class="side-scrim" @click="showSidebar = false" />
+
     <!-- 侧栏：项目列表 -->
     <aside class="side card" :class="{ open: showSidebar }">
       <div class="side-head">
         <b>项目</b>
-        <button class="sm primary" @click="createNew">新建</button>
+        <div class="side-head-acts">
+          <button class="sm primary" @click="createNew">新建</button>
+          <button class="sm ghost side-close" title="关闭" @click="showSidebar = false">✕</button>
+        </div>
       </div>
       <ul class="plist">
         <li
@@ -517,7 +523,7 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
                 :project="project" :voices="meta.voices" :styles="meta.styles"
                 :clones="clones"
                 @patch="patchProject" @toast="say"
-                @upload-clone="uploadClone" @remove-clone="removeClone"
+                @clones-changed="refreshClones" @remove-clone="removeClone"
                 @rename-clone="renameClone"
               />
             </section>
@@ -589,6 +595,9 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
 /* 侧栏 */
 .side { width: 232px; flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden; }
 .side-head { display: flex; align-items: center; justify-content: space-between; padding: 12px; border-bottom: 1px solid var(--line); }
+.side-head-acts { display: flex; align-items: center; gap: 6px; }
+.side-close { display: none; }  /* 仅手机端显示 */
+.side-scrim { display: none; }  /* 桌面端无遮罩 */
 .plist { list-style: none; margin: 0; padding: 6px; overflow-y: auto; flex: 1; }
 .plist li { display: flex; align-items: center; gap: 6px; padding: 8px 9px; border-radius: 8px; cursor: pointer; }
 .plist li:hover { background: var(--panel-2); }
@@ -675,10 +684,12 @@ watch(view, (v) => { voiceOpen.value = v === 'draft' })
   .app { padding: 8px; gap: 8px; height: auto; min-height: 100vh; }
   .burger { display: block; }
   .side {
-    position: fixed; inset: 8px auto 8px 8px; z-index: 20; width: 250px;
+    position: fixed; inset: 8px auto 8px 8px; z-index: 30; width: 250px;
     transform: translateX(-115%); transition: transform .2s; box-shadow: 0 8px 32px rgba(0,0,0,.5);
   }
   .side.open { transform: none; }
+  .side-close { display: inline-flex; }
+  .side-scrim { display: block; position: fixed; inset: 0; z-index: 25; background: rgba(0,0,0,.45); }
 
   /* 竖排后整页滚动，各区块按内容自然展开 —— 嵌套 flex 高度在小屏会塌成一行 */
   .main { min-height: 0; }

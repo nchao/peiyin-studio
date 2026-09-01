@@ -142,7 +142,7 @@ def meta():
 
 MAX_SAMPLE_BYTES = 10 * 1024 * 1024
 MIN_SAMPLE_MS = 3000
-MAX_SAMPLE_MS = 30000
+MAX_SAMPLE_MS = 15000  # 样本超过则从正中间截取这么长，克隆只需一小段代表性人声
 
 
 def _clone_to_dict(row) -> dict:
@@ -179,25 +179,37 @@ async def create_voice_clone(file: UploadFile = File(...), name: str = Form(...)
     if len(data) > MAX_SAMPLE_BYTES:
         raise HTTPException(400, "样本文件过大（≤10MB）")
 
-    # 时长先按原始文件探测（ffprobe 认所有输入格式），不合规直接拒，省掉无谓转码
+    # 时长先按原始文件探测（ffprobe 认所有输入格式）。太短没法克隆直接拒；
+    # 太长不再拒，从正中间截取 MAX_SAMPLE_MS —— 避开开头/结尾常见的静音换气。
     dur = sample_store.probe_duration_ms(data, src_ext)
-    if dur is not None and not (MIN_SAMPLE_MS <= dur <= MAX_SAMPLE_MS):
+    if dur is not None and dur < MIN_SAMPLE_MS:
         raise HTTPException(
-            400, f"样本时长 {dur/1000:.1f}s 不在推荐范围（3–30s），克隆效果差")
+            400, f"样本时长 {dur/1000:.1f}s 太短（至少 {MIN_SAMPLE_MS//1000}s），无法克隆")
+    truncated = dur is not None and dur > MAX_SAMPLE_MS
+    clip_ms = MAX_SAMPLE_MS if truncated else None
+    start_ms = (dur - MAX_SAMPLE_MS) // 2 if truncated else 0  # 居中截取的起点
 
-    # wav 直接存；其余格式统一转成 wav —— MiMo voiceclone 只稳定接受 wav/mp3
-    if src_ext == "wav":
+    # wav 且无需截断可直接存；否则统一过 ffmpeg 转 wav（并按需截断）——
+    # MiMo voiceclone 只稳定接受 wav/mp3
+    if src_ext == "wav" and not truncated:
         store_ext, store_data = "wav", data
     else:
         try:
-            store_data = sample_store.transcode_to_wav(data, src_ext)
+            store_data = sample_store.transcode_to_wav(
+                data, src_ext, max_ms=clip_ms, start_ms=start_ms)
         except sample_store.TranscodeError as exc:
             raise HTTPException(400, str(exc)) from exc
         store_ext = "wav"
 
+    # 截断后落库的时长以实际截取值为准
+    if truncated:
+        dur = MAX_SAMPLE_MS
+
     h = sample_store.save(store_data, store_ext)
     cid = db.create_voice_clone(name, h, store_ext, dur)
-    return _clone_to_dict(db.get_voice_clone(cid))
+    result = _clone_to_dict(db.get_voice_clone(cid))
+    result["truncated"] = truncated  # 前端据此提示已自动从中间截取 15s
+    return result
 
 
 class CloneRename(BaseModel):
