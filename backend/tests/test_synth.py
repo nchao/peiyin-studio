@@ -21,6 +21,28 @@ async def collect(pid: int, **kw) -> list[dict]:
     return [ev async for ev in synth.synthesize_project(pid, **kw)]
 
 
+# ---------- 退避 ----------
+
+def test_429退避比5xx更狠():
+    # 同一 attempt，429 的退避下界应明显大于 5xx —— 限流要等更久
+    for attempt in range(4):
+        s429_min = mimo_tts._backoff_seconds(attempt, 429)
+        s5xx_max = mimo_tts._backoff_seconds(attempt, 503)
+        # 429 基数 2*3^a，5xx 基数 min(2^a,8)；即便各带抖动，429 下界也远超 5xx 上界
+        assert s429_min > s5xx_max or attempt == 0
+
+
+def test_429退避有上限():
+    # 次数很大时退避被 30s 封顶（含抖动最多 45s），不会无限膨胀
+    assert mimo_tts._backoff_seconds(10, 429) <= 45.0
+
+
+def test_退避带抖动打散():
+    # 同参数多次调用应取到不同值（有随机抖动），避免惊群
+    vals = {mimo_tts._backoff_seconds(1, 429) for _ in range(20)}
+    assert len(vals) > 1
+
+
 # ---------- 重试 ----------
 
 @respx.mock
@@ -238,6 +260,38 @@ async def test_并发不超过配置上限(no_sleep, monkeypatch):
     pid = make_project([f"第{i}段内容。" for i in range(8)])
     await collect(pid)
     assert peak <= 2, f"并发峰值 {peak} 超过配置的 2"
+
+
+@respx.mock
+async def test_克隆项目用更低并发(no_sleep, monkeypatch):
+    import asyncio
+
+    from app import sample_store
+
+    # 普通并发设高、克隆并发设低，验证含克隆音色的批走的是低并发
+    monkeypatch.setattr(settings, "tts_concurrency", 8)
+    monkeypatch.setattr(settings, "tts_clone_concurrency", 2)
+
+    # 建一个克隆音色并让项目默认用它
+    h = sample_store.save(make_wav(5000), "wav")
+    cid = db.create_voice_clone("测试音色", h, "wav", 5000)
+    voice = f"clone:{cid}"
+    pid = make_project([f"第{i}段。" for i in range(6)], voice=voice)
+
+    live = 0
+    peak = 0
+
+    async def handler(request):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        await asyncio.sleep(0.02)
+        live -= 1
+        return httpx.Response(200, json=tts_response(make_wav(300)))
+
+    respx.post(URL).mock(side_effect=handler)
+    await collect(pid)
+    assert peak <= 2, f"克隆合成并发峰值 {peak} 超过克隆上限 2"
 
 
 async def test_项目不存在返回错误事件():

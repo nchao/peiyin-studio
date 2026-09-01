@@ -70,6 +70,8 @@ sudo docker compose -f docker-compose.yml -f docker-compose.deploy.yml stop     
 | `LLM_DISABLE_THINKING` | 关闭模型推理模式。分段是结构化任务，开推理慢 30 倍且更易出错，默认 `true` |
 | `LLM_CHUNK_CHARS` | 每块送 LLM 的字符数（默认 400）。LLM 输出有 token 上限，长稿必须切块并行 |
 | `TTS_CONCURRENCY` | 并发合成段数（默认 4）。MiMo 限流 RPM 100 且按账号聚合，别调太高 |
+| `TTS_CLONE_CONCURRENCY` | 克隆音色并发（默认 2）。voiceclone 限流更严，高并发会大面积 429；仍频繁 429 就降到 1 |
+| `TTS_MAX_RETRY` | 429/5xx 最大重试次数（默认 5）。429 靠指数退避消化，次数给足才熬过限流窗口 |
 | `PORT` | 对外端口（默认 8756），改这里需同步改 `docker-compose.yml` 的映射 |
 | `APP_PASSWORD` | 访问密码。留空=不鉴权（本地/局域网直接用）；设值=打开页面需登录。用于对外域名场景，务必同时让域名走 HTTPS |
 

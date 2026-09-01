@@ -23,6 +23,17 @@ from .wavutil import duration_ms_of
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
+def _backoff_seconds(attempt: int, status: int | None) -> float:
+    """退避时长。429（限流）退避更狠、抖动更大 —— 多个并发请求同时被限时，
+    大抖动能把重试错峰散开，避免退避后又一起重发（惊群）再次撞限。
+    5xx 用较温和的指数退避即可。attempt 从 0 起。"""
+    if status == 429:
+        base = min(2.0 * (3 ** attempt), 30.0)   # 2,6,18,30,30...
+        return base + random.uniform(0, base * 0.5)
+    base = min(2 ** attempt, 8)                    # 1,2,4,8,8...
+    return base + random.uniform(0, 0.5)
+
+
 class TTSError(RuntimeError):
     """合成失败，且已耗尽重试。"""
 
@@ -111,11 +122,13 @@ async def synthesize(
     http = client or httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0))
     try:
         last_err: Exception | None = None
+        last_status: int | None = None
         for attempt in range(settings.tts_max_retry + 1):
             try:
                 resp = await http.post(url, json=payload, headers=_headers())
             except httpx.HTTPError as exc:
                 last_err = TTSError(f"请求 MiMo TTS 失败: {exc}")
+                last_status = None
             else:
                 if resp.status_code == 200:
                     wav = _extract_audio(resp.json())
@@ -130,10 +143,10 @@ async def synthesize(
                     f"MiMo TTS 返回 {resp.status_code}: {detail}",
                     status=resp.status_code,
                 )
+                last_status = resp.status_code
 
             if attempt < settings.tts_max_retry:
-                backoff = min(2**attempt, 8) + random.uniform(0, 0.5)
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(_backoff_seconds(attempt, last_status))
 
         assert last_err is not None
         raise last_err

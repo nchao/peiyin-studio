@@ -16,8 +16,10 @@ class Settings(BaseSettings):
     llm_model: str = "mimo-v2.5-pro"
 
     tts_concurrency: int = 4
+    # 克隆音色单独限并发：voiceclone 模型限流更严，并发高会大面积 429
+    tts_clone_concurrency: int = 2
     tts_max_chars: int = 300
-    tts_max_retry: int = 3
+    tts_max_retry: int = 5  # 429 靠退避重试消化，次数给足
     port: int = 8756
 
     # 访问密码：留空=不鉴权（本地/局域网直接用）；设值=所有 /api 请求需登录。

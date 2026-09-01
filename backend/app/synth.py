@@ -157,7 +157,13 @@ async def synthesize_project(
 
     yield {"type": "start", "total": len(segs)}
 
-    sem = asyncio.Semaphore(max(1, settings.tts_concurrency))
+    # 本批只要用到克隆音色就整体降并发 —— voiceclone 限流严，高并发会大面积 429。
+    # 按有效音色判断（段级 clone 或继承项目默认的 clone 都算）。
+    uses_clone = any(
+        parse_clone_id(effective(s, project)[0]) is not None for s in segs
+    )
+    limit = settings.tts_clone_concurrency if uses_clone else settings.tts_concurrency
+    sem = asyncio.Semaphore(max(1, limit))
     own = client is None
     http = client or httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0))
     counts = {"ok": 0, "cached": 0, "failed": 0}
