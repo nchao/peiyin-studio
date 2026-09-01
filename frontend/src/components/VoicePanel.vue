@@ -117,11 +117,12 @@ function applyCustom() {
           </span>
         </button>
       </div>
-      <p v-else class="empty-clone muted">还没有克隆音色。上传一段人声样本（3–30s），做出专属音色。</p>
+      <p v-else class="empty-clone muted">还没有克隆音色。上传一段人声样本（3–30s，wav/mp3/m4a/flac 等），做出专属音色。</p>
 
       <!-- 上传入口 -->
       <div class="upload">
-        <input ref="fileInput" type="file" accept=".wav,.mp3,audio/wav,audio/mpeg"
+        <input ref="fileInput" type="file"
+               accept=".wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.wma,audio/*"
                class="file-in" @change="pickFile" />
         <template v-if="pendingFile">
           <input v-model="cloneName" class="clone-name" placeholder="给音色起个名，如 孙悟空"

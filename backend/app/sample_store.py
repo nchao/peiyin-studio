@@ -14,7 +14,54 @@ from pathlib import Path
 
 from .config import settings
 
+# 存储层的格式：样本一律转成 wav 存。mp3 保留是为兼容早期直接存 mp3 的记录。
 ALLOWED_EXT = {"wav", "mp3"}
+
+# 允许上传的输入格式。任意一种都会被 ffmpeg 转成 wav 再存，MiMo voiceclone
+# 只稳定接受 wav/mp3，透传其它格式会在合成时静默失败，所以统一转码。
+INPUT_EXT = {"wav", "mp3", "m4a", "aac", "flac", "ogg", "oga", "opus", "wma"}
+
+
+class TranscodeError(RuntimeError):
+    pass
+
+
+def transcode_to_wav(data: bytes, src_ext: str) -> bytes:
+    """把任意支持的音频转成单声道 PCM16 WAV。
+
+    输入走临时文件而非 stdin —— m4a/mp4 的 moov atom 可能在文件尾，管道
+    不可 seek 时 ffmpeg 解不了。转单声道（人声克隆足够，且 MiMo 输出本就
+    是单声道），保留原采样率避免降质。
+    """
+    import tempfile
+
+    src = dst = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=f".{src_ext}", delete=False) as f:
+            f.write(data)
+            src = f.name
+        dst = src + ".out.wav"
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                 "-i", src, "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", dst],
+                capture_output=True, timeout=120,
+            )
+        except FileNotFoundError as exc:
+            raise TranscodeError("未找到 ffmpeg，无法处理样本") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TranscodeError("样本转码超时") from exc
+        if proc.returncode != 0:
+            detail = proc.stderr.decode(errors="replace")[:200]
+            raise TranscodeError(f"样本无法解码（文件可能损坏或格式不支持）：{detail}")
+        out = Path(dst).read_bytes()
+        if not out:
+            raise TranscodeError("转码结果为空，样本可能不含音频轨")
+        return out
+    finally:
+        for p in (src, dst):
+            if p:
+                Path(p).unlink(missing_ok=True)
 
 
 def probe_duration_ms(data: bytes, ext: str) -> int | None:

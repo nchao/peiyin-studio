@@ -168,9 +168,10 @@ async def create_voice_clone(file: UploadFile = File(...), name: str = Form(...)
     if len(name) > 50:
         raise HTTPException(400, "音色名过长（≤50 字）")
 
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    if ext not in sample_store.ALLOWED_EXT:
-        raise HTTPException(400, "样本仅支持 wav 或 mp3 格式")
+    src_ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if src_ext not in sample_store.INPUT_EXT:
+        allowed = "、".join(sorted(sample_store.INPUT_EXT))
+        raise HTTPException(400, f"不支持的样本格式 {src_ext or '未知'}，支持：{allowed}")
 
     data = await file.read()
     if not data:
@@ -178,13 +179,24 @@ async def create_voice_clone(file: UploadFile = File(...), name: str = Form(...)
     if len(data) > MAX_SAMPLE_BYTES:
         raise HTTPException(400, "样本文件过大（≤10MB）")
 
-    dur = sample_store.probe_duration_ms(data, ext)
+    # 时长先按原始文件探测（ffprobe 认所有输入格式），不合规直接拒，省掉无谓转码
+    dur = sample_store.probe_duration_ms(data, src_ext)
     if dur is not None and not (MIN_SAMPLE_MS <= dur <= MAX_SAMPLE_MS):
         raise HTTPException(
             400, f"样本时长 {dur/1000:.1f}s 不在推荐范围（3–30s），克隆效果差")
 
-    h = sample_store.save(data, ext)
-    cid = db.create_voice_clone(name, h, ext, dur)
+    # wav 直接存；其余格式统一转成 wav —— MiMo voiceclone 只稳定接受 wav/mp3
+    if src_ext == "wav":
+        store_ext, store_data = "wav", data
+    else:
+        try:
+            store_data = sample_store.transcode_to_wav(data, src_ext)
+        except sample_store.TranscodeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        store_ext = "wav"
+
+    h = sample_store.save(store_data, store_ext)
+    cid = db.create_voice_clone(name, h, store_ext, dur)
     return _clone_to_dict(db.get_voice_clone(cid))
 
 

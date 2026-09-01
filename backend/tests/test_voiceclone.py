@@ -56,6 +56,49 @@ def test_非法格式被拒(client):
     assert r.status_code == 400
 
 
+def _wav_to(fmt: str, wav: bytes) -> bytes:
+    """用真实 ffmpeg 把 wav 转成目标格式，模拟用户上传非 wav 样本。"""
+    import os
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(wav)
+        src = f.name
+    dst = f"{src}.{fmt}"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", src, dst], check=True)
+    data = open(dst, "rb").read()
+    os.unlink(src)
+    os.unlink(dst)
+    return data
+
+
+def test_非wav格式转码后存成wav(client):
+    flac = _wav_to("flac", make_wav(5000))
+    r = client.post(
+        "/api/voice-clones",
+        files={"file": ("角色.flac", flac, "audio/flac")},
+        data={"name": "唐僧"},
+    )
+    assert r.status_code == 200, r.text
+    cid = r.json()["id"]
+    row = db.get_voice_clone(cid)
+    # 无论上传什么，存储格式恒为 wav（MiMo 只稳定接受 wav/mp3）
+    assert row["sample_ext"] == "wav"
+    assert sample_store.exists(row["sample_hash"], "wav")
+
+
+def test_损坏的音频转码失败返回400(client):
+    r = client.post(
+        "/api/voice-clones",
+        files={"file": ("坏文件.m4a", b"\x00\x01 not real audio", "audio/mp4")},
+        data={"name": "x"},
+    )
+    assert r.status_code == 400
+    assert "无法解码" in r.text or "时长" in r.text
+
+
 def test_空名字被拒(client):
     wav = make_wav(5000)
     r = client.post(
