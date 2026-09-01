@@ -7,7 +7,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from . import audio_store, db, mimo_tts, sample_store
+from . import audio_store, db, export, mimo_tts, sample_store
 from .config import settings
 
 CLONE_PREFIX = "clone:"
@@ -42,12 +42,12 @@ def _hash_factors(voice: str, style: str | None) -> tuple[str, str]:
 def expected_hash(seg, project) -> str:
     """这一段按当前设置**应该**对应的音频哈希。
 
-    新鲜度由哈希算出，不看 status 字段 —— 改项目级音色/语气时，继承它的
-    段落并不会被逐段更新，只靠 status 判断会把过期音频当成已合成。
+    新鲜度由哈希算出，不看 status 字段 —— 改项目级音色/语气/语速时，继承它
+    的段落并不会被逐段更新，只靠 status 判断会把过期音频当成已合成。
     """
-    voice, style = effective(seg, project)
+    voice, style, speed = effective(seg, project)
     voice_key, model = _hash_factors(voice, style)
-    return audio_store.audio_hash(seg["synth_text"], voice_key, style, model)
+    return audio_store.audio_hash(seg["synth_text"], voice_key, style, model, speed)
 
 
 def is_fresh(seg, project) -> bool:
@@ -56,16 +56,35 @@ def is_fresh(seg, project) -> bool:
     return bool(h) and h == expected_hash(seg, project) and audio_store.exists(h)
 
 
-def effective(seg, project) -> tuple[str, str | None]:
-    """段落的有效音色与语气：段级为空则继承项目默认值。"""
+def _project_speed(project) -> float:
+    """项目默认语速，兼容老库没有该列的情况。"""
+    try:
+        v = project["default_speed"]
+    except (KeyError, IndexError):
+        return 1.0
+    return float(v) if v is not None else 1.0
+
+
+def _seg_speed(seg):
+    """段级语速，兼容老库没有该列。返回 None 表示继承项目。"""
+    try:
+        return seg["speed"]
+    except (KeyError, IndexError):
+        return None
+
+
+def effective(seg, project) -> tuple[str, str | None, float]:
+    """段落的有效音色/语气/语速：段级为空则继承项目默认值。"""
     voice = seg["voice"] or project["default_voice"]
     style = seg["style"] if seg["style"] is not None else project["default_style"]
-    return voice, style
+    seg_speed = _seg_speed(seg)
+    speed = float(seg_speed) if seg_speed is not None else _project_speed(project)
+    return voice, style, speed
 
 
 async def _one(seg, project, sem: asyncio.Semaphore, client: httpx.AsyncClient) -> dict:
     sid = seg["id"]
-    voice, style = effective(seg, project)
+    voice, style, speed = effective(seg, project)
     h = expected_hash(seg, project)
 
     if audio_store.exists(h):
@@ -106,6 +125,17 @@ async def _one(seg, project, sem: asyncio.Semaphore, client: httpx.AsyncClient) 
             )
         except Exception as exc:  # noqa: BLE001 单段失败不该炸掉整批
             db.mark_synth_failed(sid, str(exc))
+            return {"id": sid, "seq": seg["seq"], "status": "failed", "error": str(exc)}
+
+    # 语速：MiMo 无 speed 参数，合成后用 ffmpeg atempo 变速（变速不变调）。
+    # 落盘的是变速后的音频，时长/拼接/字幕据此自动对齐。
+    if abs(speed - 1.0) > 1e-3:
+        try:
+            wav = export.change_speed(wav, speed)
+            from .wavutil import duration_ms_of
+            dur = duration_ms_of(wav)
+        except export.ExportError as exc:
+            db.mark_synth_failed(sid, f"变速失败：{exc}")
             return {"id": sid, "seq": seg["seq"], "status": "failed", "error": str(exc)}
 
     audio_store.save(h, wav)

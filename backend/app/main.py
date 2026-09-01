@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from . import (
     audio_store, auth, db, export, llm_preprocess, mimo_tts,
-    sample_store, srt, synth,
+    sample_store, srt, synth, wavutil,
 )
 from .config import settings
 from .voices import STYLE_PRESETS, VOICE_IDS, VOICES
@@ -41,11 +41,15 @@ def _attachment(filename: str) -> dict[str, str]:
 
 # ---------- 请求体 ----------
 
+SPEED_MIN, SPEED_MAX = 0.5, 2.0
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(default="未命名", max_length=100)
     raw_text: str = ""
     default_voice: str = "苏打"
     default_style: str = "calm_narration"
+    default_speed: float = Field(default=1.0, ge=SPEED_MIN, le=SPEED_MAX)
 
 
 class ProjectPatch(BaseModel):
@@ -53,6 +57,7 @@ class ProjectPatch(BaseModel):
     raw_text: str | None = None
     default_voice: str | None = None
     default_style: str | None = None
+    default_speed: float | None = Field(default=None, ge=SPEED_MIN, le=SPEED_MAX)
 
 
 class SegmentPatch(BaseModel):
@@ -61,6 +66,8 @@ class SegmentPatch(BaseModel):
     voice: str | None = None
     style: str | None = None
     pause_after_ms: int | None = Field(default=None, ge=0, le=5000)
+    # speed 段级语速；None 且在 unset 时不动，显式传 null 走继承由 patch 逻辑处理
+    speed: float | None = Field(default=None, ge=SPEED_MIN, le=SPEED_MAX)
 
 
 class SegmentsReplace(BaseModel):
@@ -75,6 +82,7 @@ class PreviewReq(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     voice: str = "苏打"
     style: str | None = "calm_narration"
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
 # ---------- 鉴权 ----------
@@ -304,9 +312,10 @@ def _segments_of(pid: int, project: dict | None = None) -> list[dict]:
     for row in db.list_segments(pid):
         d = _row_to_dict(row)
         d["fresh"] = synth.is_fresh(row, p)
-        voice, style = synth.effective(row, p)
+        voice, style, speed = synth.effective(row, p)
         d["effective_voice"] = voice
         d["effective_style"] = style
+        d["effective_speed"] = speed
         # 时间轴模式：算出该段的字幕窗口与音频溢出，供前端标红
         if d.get("start_ms") is not None and d.get("end_ms") is not None:
             d["window_ms"] = int(d["end_ms"]) - int(d["start_ms"])
@@ -330,6 +339,7 @@ def create_project(body: ProjectCreate):
         body.raw_text,
         body.default_voice,
         body.default_style,
+        body.default_speed,
     )
     return _require_project(pid)
 
@@ -468,7 +478,11 @@ def patch_segment(sid: int, body: SegmentPatch):
         raise HTTPException(400, f"未知音色 {body.voice}")
     fields = body.model_dump(exclude_unset=True)
     db.update_segment(sid, **fields)
-    return _row_to_dict(db.get_segment(sid))
+    # 返回带 fresh/effective_*/window_ms 的段，而非裸 row —— 前端整体替换后
+    # 不能丢这些计算字段（改语速会让音频过期，fresh 状态尤其关键）
+    p = _require_project(seg["project_id"])
+    updated = next((s for s in _segments_of(seg["project_id"], p) if s["id"] == sid), None)
+    return updated or _row_to_dict(db.get_segment(sid))
 
 
 # ---------- 合成 ----------
@@ -524,8 +538,13 @@ async def preview(body: PreviewReq):
     try:
         wav, dur = await mimo_tts.synthesize(
             body.text, body.voice, body.style, clone_sample=clone_sample)
+        if abs(body.speed - 1.0) > 1e-3:
+            wav = export.change_speed(wav, body.speed)
+            dur = wavutil.duration_ms_of(wav)
     except mimo_tts.TTSError as exc:
         raise HTTPException(502, str(exc)) from exc
+    except export.ExportError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return Response(
         wav,
         media_type="audio/wav",

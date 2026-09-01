@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { api } from '../api'
 
 const props = defineProps({
@@ -87,6 +87,7 @@ async function tryVoice() {
       text: SAMPLE,
       voice: props.project.default_voice,
       style: customStyle.value.trim() || props.project.default_style,
+      speed: props.project.default_speed ?? 1.0,
     })
     audioEl.value.src = url
     await audioEl.value.play()
@@ -100,6 +101,19 @@ async function tryVoice() {
 function applyCustom() {
   const v = customStyle.value.trim()
   if (v) emit('patch', { default_style: v })
+}
+
+// 语速滑块：拖动时只更新本地显示，松手（change）才提交，避免狂发请求
+const speedShown = ref(props.project.default_speed ?? 1.0)
+watch(() => props.project.default_speed, (v) => { speedShown.value = v ?? 1.0 })
+function onSpeedInput(e) { speedShown.value = Number(e.target.value) }
+function onSpeedCommit(e) {
+  const v = Number(e.target.value)
+  if (v !== (props.project.default_speed ?? 1.0)) emit('patch', { default_speed: v })
+}
+function resetSpeed() {
+  speedShown.value = 1.0
+  if ((props.project.default_speed ?? 1.0) !== 1.0) emit('patch', { default_speed: 1.0 })
 }
 </script>
 
@@ -193,6 +207,22 @@ function applyCustom() {
       </p>
     </div>
 
+    <div class="field">
+      <label>
+        语速（整篇默认，段落可单独覆盖）
+        <span class="speed-val">{{ speedShown.toFixed(2) }}×</span>
+        <button v-if="speedShown !== 1" class="speed-reset" title="复位到 1.0×" @click="resetSpeed">复位</button>
+      </label>
+      <div class="speed-row">
+        <span class="speed-tick muted">慢</span>
+        <input
+          type="range" class="speed-slider" min="0.5" max="2" step="0.05"
+          :value="speedShown" @input="onSpeedInput" @change="onSpeedCommit"
+        />
+        <span class="speed-tick muted">快</span>
+      </div>
+    </div>
+
     <button class="primary try" :disabled="previewing" @click="tryVoice">
       {{ previewing ? '合成中…' : '试听当前音色 + 语气' }}
     </button>
@@ -215,6 +245,17 @@ function applyCustom() {
 .style-grid { display: flex; flex-wrap: wrap; gap: 7px; }
 .style { font-size: 12px; padding: 6px 13px; border-radius: 999px; }
 .style.on { border-color: var(--accent-line); background: var(--accent-soft); color: #cfe0ff; }
+
+/* 语速滑块 */
+.speed-val { color: var(--accent); font-variant-numeric: tabular-nums; margin-left: 6px; font-weight: 600; }
+.speed-reset {
+  font-size: 11px; padding: 1px 8px; margin-left: 8px; border-radius: 999px;
+  background: var(--panel-2); color: var(--muted);
+}
+.speed-reset:hover { color: var(--text); }
+.speed-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.speed-tick { font-size: 11px; flex-shrink: 0; }
+.speed-slider { flex: 1; accent-color: var(--accent); cursor: pointer; height: 4px; }
 
 .hint { margin: 6px 0 0; font-size: 11px; color: var(--accent); }
 .try { margin-top: 2px; }

@@ -12,22 +12,30 @@ LLM_URL = "https://api.xiaomimimo.com/v1/chat/completions"
 
 
 def test_段级留空继承项目语气和音色():
-    project = {"default_voice": "白桦", "default_style": "suspense"}
-    seg = {"voice": None, "style": None}
-    assert effective(seg, project) == ("白桦", "suspense")
+    project = {"default_voice": "白桦", "default_style": "suspense", "default_speed": 1.0}
+    seg = {"voice": None, "style": None, "speed": None}
+    assert effective(seg, project) == ("白桦", "suspense", 1.0)
 
 
 def test_段级覆盖优先():
-    project = {"default_voice": "白桦", "default_style": "suspense"}
-    assert effective({"voice": "茉莉", "style": "lively"}, project) == ("茉莉", "lively")
+    project = {"default_voice": "白桦", "default_style": "suspense", "default_speed": 1.0}
+    seg = {"voice": "茉莉", "style": "lively", "speed": None}
+    assert effective(seg, project) == ("茉莉", "lively", 1.0)
 
 
 def test_段级空串style表示不加风格标签():
     """style="" 与 None 语义不同：空串是显式的「不要风格标签」。"""
-    project = {"default_voice": "白桦", "default_style": "suspense"}
-    _, style = effective({"voice": None, "style": ""}, project)
+    project = {"default_voice": "白桦", "default_style": "suspense", "default_speed": 1.0}
+    _, style, _ = effective({"voice": None, "style": "", "speed": None}, project)
     assert style == ""
     assert build_synth_payload_text("正文", style) == "正文"
+
+
+def test_段级语速覆盖项目默认():
+    project = {"default_voice": "白桦", "default_style": "suspense", "default_speed": 1.2}
+    # 段级留空 → 继承 1.2；段级指定 → 用段级
+    assert effective({"voice": None, "style": None, "speed": None}, project)[2] == 1.2
+    assert effective({"voice": None, "style": None, "speed": 0.8}, project)[2] == 0.8
 
 
 def test_规则兜底不写死项目语气():

@@ -18,6 +18,37 @@ def test_四个因子任一变化都失效():
     assert audio_store.audio_hash("你好世界", "苏打", "suspense", "other-model") != base
 
 
+def test_语速变化使缓存失效():
+    base = audio_store.audio_hash("你好世界", "苏打", "suspense", M)  # 默认 1.0
+    assert audio_store.audio_hash("你好世界", "苏打", "suspense", M, 1.0) == base
+    assert audio_store.audio_hash("你好世界", "苏打", "suspense", M, 0.8) != base
+    assert audio_store.audio_hash("你好世界", "苏打", "suspense", M, 1.5) != base
+    # 1.0 与 1 归一化后一致
+    assert audio_store.audio_hash("你好世界", "苏打", "suspense", M, 1) == base
+
+
+def test_变速改变时长():
+    from app.wavutil import duration_ms_of
+    wav = make_wav(2000)
+    faster = export.change_speed(wav, 2.0)   # 2倍速 → 约 1000ms
+    slower = export.change_speed(wav, 0.5)   # 0.5倍速 → 约 4000ms
+    assert abs(duration_ms_of(faster) - 1000) < 100
+    assert abs(duration_ms_of(slower) - 4000) < 100
+    # 变速后仍是 24k 单声道 16bit，可直接拼接
+    info = parse_wav(faster)
+    assert (info.sample_rate, info.channels, info.sample_width) == (24000, 1, 2)
+
+
+def test_1倍速原样返回():
+    wav = make_wav(1000)
+    assert export.change_speed(wav, 1.0) == wav
+
+
+def test_变速超范围报错():
+    with pytest.raises(export.ExportError, match="超出范围"):
+        export.change_speed(make_wav(500), 3.0)
+
+
 def test_哈希分隔避免拼接歧义():
     """("ab","c") 与 ("a","bc") 不能撞哈希。"""
     assert audio_store.audio_hash("ab", "c", None, M) != audio_store.audio_hash("a", "bc", None, M)

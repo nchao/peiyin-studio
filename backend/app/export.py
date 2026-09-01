@@ -111,6 +111,40 @@ def concat_wav_timeline(segments: list[dict]) -> tuple[bytes, list[dict]]:
     return build_wav(b"".join(chunks), sample_rate=rate), placements
 
 
+def change_speed(wav_bytes: bytes, speed: float) -> bytes:
+    """用 ffmpeg atempo 变速，变速不变调。speed>1 更快、<1 更慢。
+
+    atempo 单次支持 0.5~2.0，本项目语速范围即在此内，无需串联多个滤镜。
+    走 stdin/stdout，输出仍是 24k 单声道 16bit WAV，可直接拼接。
+    """
+    if abs(speed - 1.0) <= 1e-3:
+        return wav_bytes
+    if not (0.5 <= speed <= 2.0):
+        raise ExportError(f"语速 {speed} 超出范围（0.5~2.0）")
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "wav", "-i", "pipe:0",
+                "-filter:a", f"atempo={speed:.3f}",
+                "-c:a", "pcm_s16le", "-ar", str(SAMPLE_RATE), "-ac", "1",
+                "-f", "wav", "pipe:1",
+            ],
+            input=wav_bytes,
+            capture_output=True,
+            timeout=120,
+        )
+    except FileNotFoundError as exc:
+        raise ExportError("未找到 ffmpeg，无法变速") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ExportError("ffmpeg 变速超时") from exc
+    if proc.returncode != 0:
+        raise ExportError(f"ffmpeg 变速失败: {proc.stderr.decode(errors='replace')[:300]}")
+    if not proc.stdout:
+        raise ExportError("变速结果为空")
+    return proc.stdout
+
+
 def wav_to_mp3(wav_bytes: bytes, bitrate: str = "192k") -> bytes:
     """调 ffmpeg 转 mp3。走 stdin/stdout，不落临时文件。"""
     try:

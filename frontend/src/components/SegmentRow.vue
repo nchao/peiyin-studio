@@ -20,6 +20,16 @@ const audioEl = ref(null)
 // 段级为空表示继承项目默认值
 const inheritedVoice = computed(() => props.project.default_voice)
 const inheritedStyle = computed(() => props.project.default_style)
+const inheritedSpeed = computed(() => props.project.default_speed ?? 1.0)
+
+// 段级语速：null=继承项目。滑块展示值取有效语速（段级优先）
+const effSpeed = computed(() => props.seg.speed ?? inheritedSpeed.value)
+const speedOverridden = computed(() => props.seg.speed != null)
+const segSpeedShown = ref(effSpeed.value)
+watch(effSpeed, (v) => { segSpeedShown.value = v })
+function onSegSpeedInput(e) { segSpeedShown.value = Number(e.target.value) }
+function commitSegSpeed(e) { patch('speed', Number(e.target.value)) }
+function clearSegSpeed() { patch('speed', null) }
 
 // 这一段实际生效的音色/语气（段级覆盖优先，否则继承项目默认）
 const effVoice = computed(() => props.seg.voice ?? inheritedVoice.value)
@@ -216,6 +226,18 @@ async function play() {
             <span class="unit muted">ms</span>
           </div>
         </div>
+        <div class="detail-row">
+          <label>语速</label>
+          <div class="seg-speed">
+            <input
+              type="range" min="0.5" max="2" step="0.05"
+              :value="segSpeedShown" @input="onSegSpeedInput" @change="commitSegSpeed"
+            />
+            <span class="seg-speed-val">{{ segSpeedShown.toFixed(2) }}×</span>
+            <button v-if="speedOverridden" class="seg-speed-clear" title="跟随整篇" @click="clearSegSpeed">跟随</button>
+            <span v-else class="unit muted">跟随整篇</span>
+          </div>
+        </div>
         <div class="detail-row synth">
           <label>合成文本</label>
           <textarea
@@ -317,6 +339,11 @@ async function play() {
 .pause { flex: 1; display: flex; align-items: center; gap: 6px; }
 .pause input { width: 90px; text-align: right; }
 .unit { font-size: 12px; }
+.seg-speed { flex: 1; display: flex; align-items: center; gap: 8px; }
+.seg-speed input[type=range] { flex: 1; accent-color: var(--accent); cursor: pointer; height: 4px; }
+.seg-speed-val { font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; min-width: 44px; }
+.seg-speed-clear { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--panel-3); color: var(--muted); }
+.seg-speed-clear:hover { color: var(--text); }
 
 .err { margin: 2px 0 0 8px; color: var(--err); font-size: 12px; word-break: break-all; }
 

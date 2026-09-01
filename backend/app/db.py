@@ -31,21 +31,27 @@ def init_db() -> None:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """轻量迁移：给老库补新列。CREATE TABLE IF NOT EXISTS 不会改已存在的表。"""
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(segment)")}
+    seg_cols = {r["name"] for r in conn.execute("PRAGMA table_info(segment)")}
     for col in ("start_ms", "end_ms"):
-        if col not in cols:
+        if col not in seg_cols:
             conn.execute(f"ALTER TABLE segment ADD COLUMN {col} INTEGER")
+    if "speed" not in seg_cols:
+        conn.execute("ALTER TABLE segment ADD COLUMN speed REAL")
+    proj_cols = {r["name"] for r in conn.execute("PRAGMA table_info(project)")}
+    if "default_speed" not in proj_cols:
+        conn.execute("ALTER TABLE project ADD COLUMN default_speed REAL NOT NULL DEFAULT 1.0")
 
 
 # ---------- project ----------
 
-def create_project(name: str, raw_text: str, voice: str, style: str) -> int:
+def create_project(name: str, raw_text: str, voice: str, style: str,
+                   speed: float = 1.0) -> int:
     ts = now_iso()
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO project(name, raw_text, default_voice, default_style,"
-            " created_at, updated_at) VALUES (?,?,?,?,?,?)",
-            (name, raw_text, voice, style, ts, ts),
+            " default_speed, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            (name, raw_text, voice, style, speed, ts, ts),
         )
         return int(cur.lastrowid)
 
@@ -65,7 +71,7 @@ def list_projects() -> list[sqlite3.Row]:
 
 
 def update_project(pid: int, **fields) -> None:
-    allowed = {"name", "raw_text", "default_voice", "default_style"}
+    allowed = {"name", "raw_text", "default_voice", "default_style", "default_speed"}
     sets = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not sets:
         return
@@ -91,8 +97,8 @@ def replace_segments(pid: int, segments: list[dict]) -> None:
         conn.execute("DELETE FROM segment WHERE project_id=?", (pid,))
         conn.executemany(
             "INSERT INTO segment(project_id, seq, display_text, synth_text, voice,"
-            " style, pause_after_ms, start_ms, end_ms, status)"
-            " VALUES (?,?,?,?,?,?,?,?,?, 'pending')",
+            " style, pause_after_ms, speed, start_ms, end_ms, status)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?, 'pending')",
             [
                 (
                     pid,
@@ -102,6 +108,7 @@ def replace_segments(pid: int, segments: list[dict]) -> None:
                     s.get("voice"),
                     s.get("style"),
                     s.get("pause_after_ms", 0),
+                    s.get("speed"),
                     s.get("start_ms"),
                     s.get("end_ms"),
                 )
@@ -137,13 +144,13 @@ def get_segment(sid: int) -> sqlite3.Row | None:
 def update_segment(sid: int, **fields) -> None:
     """改 segment。改动合成因子时清掉音频引用，强制下次重合成。"""
     allowed = {
-        "display_text", "synth_text", "voice", "style", "pause_after_ms",
+        "display_text", "synth_text", "voice", "style", "pause_after_ms", "speed",
         "audio_hash", "duration_ms", "status", "error_msg",
     }
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return
-    if {"synth_text", "voice", "style"} & sets.keys():
+    if {"synth_text", "voice", "style", "speed"} & sets.keys():
         sets.setdefault("audio_hash", None)
         sets.setdefault("duration_ms", None)
         sets.setdefault("status", "pending")

@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS project (
     raw_text      TEXT    NOT NULL DEFAULT '',
     default_voice TEXT    NOT NULL DEFAULT '苏打',
     default_style TEXT    NOT NULL DEFAULT 'calm_narration',
+    default_speed REAL    NOT NULL DEFAULT 1.0,
     created_at    TEXT    NOT NULL,
     updated_at    TEXT    NOT NULL
 );
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS segment (
     voice          TEXT,
     style          TEXT,
     pause_after_ms INTEGER NOT NULL DEFAULT 0,
+    speed          REAL,  -- NULL=继承项目 default_speed；否则段级语速倍率
     audio_hash     TEXT,
     duration_ms    INTEGER,
     status         TEXT    NOT NULL DEFAULT 'pending',

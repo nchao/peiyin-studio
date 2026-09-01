@@ -8,12 +8,14 @@ from pathlib import Path
 from .config import settings
 
 
-def audio_hash(synth_text: str, voice: str, style: str | None, model: str) -> str:
-    """内容哈希。四个因子任一变化都应失效。
+def audio_hash(synth_text: str, voice: str, style: str | None, model: str,
+               speed: float = 1.0) -> str:
+    """内容哈希。任一因子变化都应失效（含语速 —— 变速后落盘的音频不同）。
 
-    用 \\x00 分隔，避免 ("ab","c") 与 ("a","bc") 撞哈希。
+    用 \\x00 分隔，避免 ("ab","c") 与 ("a","bc") 撞哈希。speed 归一化成
+    定点字符串，1.0 与 1 视为同一，避免浮点表示差异导致的缓存不命中。
     """
-    raw = "\x00".join([synth_text, voice, style or "", model])
+    raw = "\x00".join([synth_text, voice, style or "", model, f"{speed:.3f}"])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
